@@ -8,7 +8,7 @@
 #
 # For inquiries contact  george.drettakis@inria.fr
 #
-
+import open3d as o3d
 import torch
 import numpy as np
 from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation, farthest_point_sampling, random_point_sampling
@@ -61,10 +61,11 @@ class InstGaussianModel:
         self.template_intervals = {}
         # transforms: {template_name: [trans1, trans2, ...], ...}
         self.transforms = {}
-        # feature_dc_offsets: {template_name: [offset1, offset2, ...], ...}
+        # features_dc_offsets: {template_name: [offset1, offset2, ...], ...}
         self.features_dc_offsets = {}
-        # feature_rest_offsets: {template_name: [offset1, offset2, ...], ...}
+        # features_rest_offsets: {template_name: [offset1, offset2, ...], ...}
         self.features_rest_offsets = {}
+        self.is_instanced = False
         self.setup_functions()
 
     def capture(self):
@@ -115,42 +116,82 @@ class InstGaussianModel:
     def set_features_rest_offsets(self, features_rest_offsets):
         self.features_rest_offsets = features_rest_offsets
 
-    def intancing(self):
-        full_xyz = self._xyz.clone()
-        full_scaling = self._scaling.clone()
-        full_rotation = self._rotation.clone()
-        full_opacity = self._opacity.clone()
-        full_features_dc = self._features_dc.clone()
-        full_features_rest = self._features_rest.clone()
-
+    def instancing(self):
+        # all_instances = []
+        trans_xyz = self._xyz.clone()
+        trans_rotation = self._rotation.clone()
+        trans_features_dc = self._features_dc.clone()
+        trans_features_rest = self._features_rest.clone()
+        trans_scaling = self._scaling.clone()
+        trans_opacity = self._opacity.clone()
         for k, v in self.template_intervals.items():
-            temp_xyz = full_xyz[v[0]:v[1]]
-            temp_scaling = full_scaling[v[0]:v[1]]
-            temp_rotation = full_rotation[v[0]:v[1]]
-            temp_opacity = full_opacity[v[0]:v[1]]
-            temp_features_dc = full_features_dc[v[0]:v[1]]
-            temp_features_rest = full_features_rest[v[0]:v[1]]
             trans = self.transforms[k]
             for idx, tran in enumerate(trans):
                 # 单位阵跳过
-                if torch.allclose(tran, torch.eye(tran.shape[0])):
+                if torch.allclose(tran, torch.eye(tran.shape[0], device="cuda")):
                     continue
                 # xyz
-                trans_xyz = geom_transform_points(temp_xyz, tran)
-                full_xyz = torch.cat([full_xyz, trans_xyz], dim=0)
-                # scaling
-                full_scaling = torch.cat([full_scaling, temp_scaling], dim=0)
+                trans_xyz[v[0]:v[1]] = geom_transform_points(self._xyz[v[0]:v[1]], tran)
                 # rotation
-                trans_rotation = geom_transform_quat(temp_rotation, tran.T)
-                full_rotation = torch.cat([full_rotation, trans_rotation], dim=0)
-                # opacity
-                full_opacity = torch.cat([full_opacity, temp_opacity], dim=0)
-                # feature_dc
-                full_features_dc = torch.cat([full_features_dc, 0.8 * temp_features_dc + 0.2 * self.feature_dc_offset[idx]])
-                # feature_rest
-                full_features_rest = torch.cat([full_features_rest, 0.8 * temp_features_rest + 0.2 * self.feature_rest_offset[idx]])
-        
-        return (full_xyz, full_scaling, full_rotation, full_opacity, full_features_dc, full_features_rest)
+                trans_rotation[v[0]:v[1]] = geom_transform_quat(self._rotation[v[0]:v[1]], tran.T)
+                # scaling and opacity stay same
+                # sh
+                trans_features_dc[v[0]:v[1]] = 0.8 * self._features_dc[v[0]:v[1]] + 0.2 * self.features_dc_offsets[k][idx]
+                trans_features_rest[v[0]:v[1]] = 0.8 * self._features_rest[v[0]:v[1]] + 0.2 * self.features_rest_offsets[k][idx]
+                # all_instances.append((trans_xyz, trans_rotation, trans_scaling, trans_opacity, trans_features_dc, trans_features_rest))
+        return (trans_xyz, trans_rotation, trans_scaling, trans_opacity, trans_features_dc, trans_features_rest)
+        # return all_instances
+
+        # self.is_instanced = True
+        # full_xyz = self._xyz.clone()
+        # full_scaling = self._scaling.clone()
+        # full_rotation = self._rotation.clone()
+        # full_opacity = self._opacity.clone()
+        # full_features_dc = self._features_dc.clone()
+        # full_features_rest = self._features_rest.clone()
+
+        # for k, v in self.template_intervals.items():
+        #     temp_xyz = full_xyz[v[0]:v[1]]
+        #     temp_scaling = full_scaling[v[0]:v[1]]
+        #     temp_rotation = full_rotation[v[0]:v[1]]
+        #     temp_opacity = full_opacity[v[0]:v[1]]
+        #     temp_features_dc = full_features_dc[v[0]:v[1]]
+        #     temp_features_rest = full_features_rest[v[0]:v[1]]
+        #     trans = self.transforms[k]
+        #     for idx, tran in enumerate(trans):
+        #         # 单位阵跳过
+        #         if torch.allclose(tran, torch.eye(tran.shape[0], device="cuda")):
+        #             continue
+        #         # xyz
+        #         trans_xyz = geom_transform_points(temp_xyz, tran)
+        #         full_xyz = torch.cat([full_xyz, trans_xyz], dim=0)
+        #         # scaling
+        #         full_scaling = torch.cat([full_scaling, temp_scaling], dim=0)
+        #         # rotation
+        #         trans_rotation = geom_transform_quat(temp_rotation, tran.T)
+        #         full_rotation = torch.cat([full_rotation, trans_rotation], dim=0)
+        #         # opacity
+        #         full_opacity = torch.cat([full_opacity, temp_opacity], dim=0)
+        #         # feature_dc
+        #         full_features_dc = torch.cat([full_features_dc, 0.8 * temp_features_dc + 0.2 * self.features_dc_offsets[k][idx]])
+        #         # feature_rest
+        #         full_features_rest = torch.cat([full_features_rest, 0.8 * temp_features_rest + 0.2 * self.features_rest_offsets[k][idx]])
+        # self.max_radii2D = torch.zeros((full_xyz.shape[0]), device="cuda")
+        # self.xyz_gradient_accum = torch.zeros((full_xyz.shape[0], 1), device="cuda")
+        # self.denom = torch.zeros((full_xyz.shape[0], 1), device="cuda")
+
+        # self.full_xyz = full_xyz
+        # self.full_scaling = full_scaling
+        # self.full_rotation = full_rotation
+        # self.full_opacity = full_opacity
+        # self.full_features_dc = full_features_dc
+        # self.full_features_rest = full_features_rest
+
+        # return (full_xyz, full_scaling, full_rotation, full_opacity, full_features_dc, full_features_rest)
+
+    # def get_full_params(self):
+    #     self.instancing()
+    #     return (self.full_xyz, self.full_scaling, self.full_rotation, self.full_opacity, self.full_features_dc, self.full_features_rest)
 
     @property
     def get_scaling(self):
@@ -217,24 +258,16 @@ class InstGaussianModel:
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        # self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
         # self._mask = nn.Parameter(mask.requires_grad_(True))
         self.segment_times = 0
         self._mask = torch.ones((self._xyz.shape[0],), dtype=torch.float, device="cuda")
 
-    def set_sh_offsets(self, feature_dc_offsets, feature_rest_offsets):
-        self.feature_dc_offset = []
-        self.feature_rest_offset = []
-        for idx, offset in enumerate(feature_dc_offsets):
-            self.feature_dc_offset[idx] = nn.Parameter(offset.requires_grad_(True))
-        for idx, offset in enumerate(feature_rest_offsets):
-            self.feature_rest_offset[idx] = nn.Parameter(offset.requires_grad_(True))
-        
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        # self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        # self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
@@ -247,9 +280,12 @@ class InstGaussianModel:
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
         ]
-        if len(self._sh_offsets) != 0:
-            for idx, offset in enumerate(self._sh_offsets):
-                l.append({'params': [offset], 'lr': training_args.feature_lr / 20.0, 'name': f'sh_offset_{idx}'})
+        for k, v in self.features_dc_offsets.items():
+            for idx, offset in enumerate(v):
+                l.append({'params': [offset], 'lr': training_args.feature_lr, 'name': f'{k}_f_dc_offset_{idx}'})
+        for k, v in self.features_rest_offsets.items():
+            for idx, offset in enumerate(v):
+                l.append({'params': [offset], 'lr': training_args.feature_lr / 20.0, 'name': f'{k}_f_rest_offset_{idx}'})
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
@@ -549,4 +585,5 @@ class InstGaussianModel:
         shared_template_color = all_color[sampling_idx].squeeze()
         pcd = BasicPointCloud(points=shared_template_xyz.detach().cpu().numpy(), colors=shared_template_color.detach().cpu().numpy(), normals=np.zeros((num_pts, 3)))
         self.create_from_pcd(pcd, spatial_lr_scale=0.1)
+
 
