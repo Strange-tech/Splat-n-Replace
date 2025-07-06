@@ -54,7 +54,10 @@ def training(dataset, opt, pipe, inst_gs, testing_iterations, saving_iterations,
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
 
+    # inst_gs.instancing()
+
     for iteration in range(first_iter, opt.iterations + 1):   
+        inst_gs.instancing()
         gc.collect()
         torch.cuda.empty_cache()     
         # if network_gui.conn == None:
@@ -101,7 +104,7 @@ def training(dataset, opt, pipe, inst_gs, testing_iterations, saving_iterations,
         # gt_mask[gt_mask != 0] = 1
 
         # mask_loss = - ((gt_mask * mask).sum() + 0.15 * ((1-gt_mask) * mask).sum())
-        if iteration % 500 == 0:
+        if iteration % 1000 == 0:
             save_image_pair_cv2(image, gt_image, iteration)
             
         Ll1 = l1_loss(image, gt_image)
@@ -230,7 +233,7 @@ if __name__ == "__main__":
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[1_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)

@@ -397,8 +397,8 @@ def instanced_render(viewpoint_camera, inst_gs: InstGaussianModel, pipe, bg_colo
     # whole_features_rest = torch.cat([bg_gs.get_features_rest, full_features_rest], dim=0).to("cuda")
     # whole_features = torch.cat([whole_features_dc, whole_features_rest], dim=1).to("cuda")
 
-    (trans_xyz, trans_rotation, trans_scaling, trans_opacity, trans_features_dc, trans_features_rest) = inst_gs.instancing()
-    trans_features = torch.cat([trans_features_dc, trans_features_rest], dim=1).to("cuda")
+    # (trans_xyz, trans_rotation, trans_scaling, trans_opacity, trans_features_dc, trans_features_rest) = inst_gs.instancing()
+    # trans_features = torch.cat([trans_features_dc, trans_features_rest], dim=1).to("cuda")
     # full_xyz = torch.cat([inst_gs.get_xyz, trans_xyz], dim=0)
     # full_rotation = torch.cat([inst_gs.get_rotation, trans_rotation], dim=0)
     # full_scaling = torch.cat([inst_gs.get_scaling, trans_scaling], dim=0)
@@ -413,7 +413,7 @@ def instanced_render(viewpoint_camera, inst_gs: InstGaussianModel, pipe, bg_colo
     # trans_features = torch.cat([trans_features_dc, trans_features_rest], dim=1).to("cuda")
 
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
-    screenspace_points = torch.zeros_like(trans_xyz, dtype=trans_xyz.dtype, requires_grad=True, device="cuda") + 0
+    screenspace_points = torch.zeros_like(inst_gs.get_full_xyz, dtype=inst_gs.get_full_xyz.dtype, requires_grad=True, device="cuda") + 0
     try:
         screenspace_points.retain_grad()
     except:
@@ -440,9 +440,10 @@ def instanced_render(viewpoint_camera, inst_gs: InstGaussianModel, pipe, bg_colo
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
-    means3D = trans_xyz
+    means3D = inst_gs.get_full_xyz
     means2D = screenspace_points
-    opacity = inst_gs.get_opacity
+    opacity = inst_gs.get_full_opacity
+    
     if filtered_mask is not None:
         new_opacity = opacity.detach().clone()
         new_opacity[filtered_mask, :] = 0
@@ -454,10 +455,10 @@ def instanced_render(viewpoint_camera, inst_gs: InstGaussianModel, pipe, bg_colo
     rotations = None
     cov3D_precomp = None
     if pipe.compute_cov3D_python:
-        cov3D_precomp = inst_gs.covariance_activation(inst_gs.get_scaling, scaling_modifier, trans_rotation)
+        cov3D_precomp = inst_gs.covariance_activation(inst_gs.get_full_scaling, scaling_modifier, inst_gs.get_full_rotation)
     else:
-        scales = inst_gs.get_scaling
-        rotations = trans_rotation
+        scales = inst_gs.get_full_scaling
+        rotations = inst_gs.get_full_rotation
 
     # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
     # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
@@ -465,13 +466,13 @@ def instanced_render(viewpoint_camera, inst_gs: InstGaussianModel, pipe, bg_colo
     colors_precomp = None
     if override_color is None:
         if pipe.convert_SHs_python:
-            shs_view = trans_features.transpose(1, 2).view(-1, 3, (inst_gs.max_sh_degree+1)**2)
-            dir_pp = (trans_xyz - viewpoint_camera.camera_center.repeat(trans_features.shape[0], 1))
+            shs_view = inst_gs.get_full_features.transpose(1, 2).view(-1, 3, (inst_gs.max_sh_degree+1)**2)
+            dir_pp = (inst_gs.get_full_xyz - viewpoint_camera.camera_center.repeat(inst_gs.get_full_features.shape[0], 1))
             dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True)
             sh2rgb = eval_sh(inst_gs.active_sh_degree, shs_view, dir_pp_normalized)
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
         else:
-            shs = trans_features
+            shs = inst_gs.get_full_features
     else:
         colors_precomp = override_color
 
