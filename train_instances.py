@@ -22,6 +22,7 @@ try:
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
+import torch.nn.functional as F
 
 
 def save_image_pair_cv2(pred_img, gt_img, step, save_dir="./tmp"):
@@ -35,7 +36,7 @@ def save_image_pair_cv2(pred_img, gt_img, step, save_dir="./tmp"):
     cv2.imwrite(f"{save_dir}/pred_{step:05d}.png", cv2.cvtColor(pred_np, cv2.COLOR_RGB2BGR))
     cv2.imwrite(f"{save_dir}/gt_{step:05d}.png", cv2.cvtColor(gt_np, cv2.COLOR_RGB2BGR))
 
-def training(dataset, opt, pipe, inst_gs, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(dataset, opt, pipe, inst_gs, bg_gs, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
     scene = InstScene(dataset, inst_gs)
     inst_gs.training_setup(opt)
@@ -43,8 +44,9 @@ def training(dataset, opt, pipe, inst_gs, testing_iterations, saving_iterations,
         (model_params, first_iter) = torch.load(checkpoint)
         inst_gs.restore(model_params, opt)
 
-    bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
-    background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+    if bg_gs is not None:
+        bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
+        background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
@@ -59,7 +61,11 @@ def training(dataset, opt, pipe, inst_gs, testing_iterations, saving_iterations,
     for iteration in range(first_iter, opt.iterations + 1):   
         inst_gs.instancing()
         gc.collect()
-        torch.cuda.empty_cache()     
+        torch.cuda.empty_cache()    
+        
+        if bg_gs is None:
+            bg_color = np.random.rand(3)
+            background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
         # if network_gui.conn == None:
         #     network_gui.try_connect()
         # while network_gui.conn != None:
@@ -93,23 +99,34 @@ def training(dataset, opt, pipe, inst_gs, testing_iterations, saving_iterations,
             pipe.debug = True
 
         # start_time = time.time()
-        render_pkg = instanced_render(viewpoint_cam, inst_gs, pipe, background)
-        # image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-        image = render_pkg["render"]
+        render_pkg = instanced_render(viewpoint_cam, inst_gs, bg_gs, pipe, background)
+        image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        # image = render_pkg["render"]
         # print("render time", time.time() - start_time)
 
-        # Loss
-        gt_image = viewpoint_cam.original_image.cuda()
-        # gt_mask = gt_image.sum(dim = 0)[None,:,:]
-        # gt_mask[gt_mask != 0] = 1
+        if bg_gs is not None:
+            gt_image = viewpoint_cam.original_image.cuda()
 
-        # mask_loss = - ((gt_mask * mask).sum() + 0.15 * ((1-gt_mask) * mask).sum())
-        if iteration % 1000 == 0:
-            save_image_pair_cv2(image, gt_image, iteration)
+            if iteration % 1000 == 0:
+                save_image_pair_cv2(image, gt_image, iteration)
+
+            Ll1 = l1_loss(image, gt_image)
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+            # loss += 1e-2 * torch.mean(torch.abs(inst_gs.feature_dc_offset)) +
+            #         1e-2 * torch.mean(torch.abs(feature_rest_offset))
+        else:
+            # Loss
+            gt_image = viewpoint_cam.original_image.cuda()
+            mask = torch.load(f'{dataset.source_path}/instance_masks/{viewpoint_cam.image_name}.pt')
+            mask3 = mask.unsqueeze(0).expand_as(gt_image)  # 变成 3 通道掩码
+            masked_gt_image = gt_image * mask3 + background.view(3, 1, 1).expand_as(gt_image) * (1 - mask3)
             
-        Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-        # loss = mask_loss
+            if iteration % 1000 == 0:
+                save_image_pair_cv2(image, masked_gt_image, iteration)
+                
+            Ll1 = l1_loss(image, masked_gt_image)
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, masked_gt_image))
+        
         loss.backward()
 
         iter_end.record()
@@ -117,8 +134,10 @@ def training(dataset, opt, pipe, inst_gs, testing_iterations, saving_iterations,
         with torch.no_grad():
             # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
+            mse = F.mse_loss(image, gt_image)
+            psnr = -10 * torch.log10(mse + 1e-8)  # 避免 log(0)
             if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}"})
+                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "PSNR": f"{psnr.item():.{2}f}"})
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
@@ -154,12 +173,18 @@ def training(dataset, opt, pipe, inst_gs, testing_iterations, saving_iterations,
 
 if __name__ == "__main__":
 
-    template_names = ["armchair", "ottoman", "sofa"]
+    # load secne_graph from json file  
+    import json
+    scene_graph_path = '/root/autodl-tmp/data/replica_room/room0/scene_graph.json'
+    with open(scene_graph_path, 'r') as f:
+        scene_graph = json.load(f)  
+    print(f"Scene graph loaded from {scene_graph_path}")
 
     shared_gaussians = InstGaussianModel(sh_degree=3)
-    
-    # bg_gaussians = GaussianModel(sh_degree=3)
-    # bg_gaussians.load_ply("./segmentation_res/background/bg.ply")
+    bg_gaussians = GaussianModel(sh_degree=3)
+    bg_gaussians.load_ply("/root/autodl-tmp/data/replica_room/room0/seg_inst/bg.ply")
+
+    bg_gaussians.frozen()
 
     shared_xyz = None
     shared_color = None
@@ -168,22 +193,22 @@ if __name__ == "__main__":
     features_dc_offsets = {}
     features_rest_offsets = {}
 
-    for template_name in template_names:
+    for temp_map in scene_graph:
 
-        instance_paths = [f'./segmentation_res/{template_name}/1/', f'./segmentation_res/{template_name}/2/']
+        template_name = temp_map["template_id"]
+        print(f"Processing template: {template_name}")
 
         template_gs = GaussianModel(sh_degree=3)
         # 1. 加载所有实例，转换到模板空间
         all_instances = []
-        for i, path in enumerate(instance_paths):
+        for inst in temp_map["instances"]:
+            inst_path = f'/root/autodl-tmp/data/replica_room/room0/seg_inst/{inst["instance_id"]}.ply'
             gs = GaussianModel(sh_degree=3)
-            gs.load_ply(f'{path}{template_name}.ply')
+            gs.load_ply(inst_path)
             # 注意：这里转置了一下，是为了方便与xyz做矩阵乘法
-            t = torch.from_numpy(np.load(f'{path}transform.npy').T).float().to("cuda")
-            # print(transform)
+            t = torch.from_numpy(np.array(inst["transform"]).T).float().to("cuda")
             gs._xyz = geom_transform_points(gs.get_xyz, t)
             gs._rotation = geom_transform_quat(gs.get_rotation, t.T)
-            # gs.save_ply(f"./tmp/test/{i}.ply")
             all_instances.append(gs)
             if template_name not in transforms:
                 transforms[template_name] = []
@@ -219,7 +244,7 @@ if __name__ == "__main__":
     shared_gaussians.set_features_dc_offsets(features_dc_offsets)
     shared_gaussians.set_features_rest_offsets(features_rest_offsets)
 
-    shared_gaussians.save_ply("./tmp/test.ply")
+    # shared_gaussians.save_ply("./tmp/test.ply")
 
     # print(vars(shared_gaussians))
     
@@ -233,9 +258,9 @@ if __name__ == "__main__":
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 10_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[5_000, 10_000])
     parser.add_argument("--start_checkpoint", type=str, default = None)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
@@ -249,7 +274,7 @@ if __name__ == "__main__":
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
 
-    training(lp.extract(args), op.extract(args), pp.extract(args), shared_gaussians, args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    training(lp.extract(args), op.extract(args), pp.extract(args), shared_gaussians, bg_gaussians, args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
 
     # All done
     print("\nTraining complete.")

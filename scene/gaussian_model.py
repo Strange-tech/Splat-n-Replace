@@ -178,11 +178,6 @@ class GaussianModel:
         # self._mask = nn.Parameter(mask.requires_grad_(True))
         self.segment_times = 0
         self._mask = torch.ones((self._xyz.shape[0],), dtype=torch.float, device="cuda")
-
-    def set_sh_offsets(self, sh_offsets):
-        self._sh_offsets = []
-        for idx, offset in enumerate(sh_offsets):
-            self._sh_offsets[idx] = nn.Parameter(offset.requires_grad_(True))
         
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
@@ -609,7 +604,7 @@ class GaussianModel:
         num_pts = 0
         for inst in all_instances:
             xyz = inst.get_xyz  # shape: [M, 3]
-            color = inst.get_basecolor
+            color = inst.get_features_dc
             all_xyz_list.append(xyz)
             all_color_list.append(color)
             num_pts = max(num_pts, xyz.shape[0])
@@ -626,3 +621,13 @@ class GaussianModel:
         shared_template_color = all_color[sampling_idx].squeeze()
         pcd = BasicPointCloud(points=shared_template_xyz.detach().cpu().numpy(), colors=shared_template_color.detach().cpu().numpy(), normals=np.zeros((num_pts, 3)))
         self.create_from_pcd(pcd, spatial_lr_scale=0.1)
+
+    def frozen(self):
+        self._xyz.requires_grad_(False)
+        # self._mask.requires_grad_(False)
+
+        self._features_dc.requires_grad_(False)
+        self._features_rest.requires_grad_(False)
+        self._opacity.requires_grad_(False)
+        self._scaling.requires_grad_(False)
+        self._rotation.requires_grad_(False)
