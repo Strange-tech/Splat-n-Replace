@@ -4,5 +4,5 @@ segmentation_res/
 output/
 tmp/
 point_cloud/
-input.ply
-cameras.json
+__pycache__/
+**/__pycache__/
