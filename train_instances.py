@@ -2,12 +2,14 @@ import torch
 from utils.graphics_utils import geom_transform_quat, geom_transform_points
 import numpy as np
 import os
+import yaml
 from random import randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui, instanced_render
 import sys
-from instanced_scene import InstScene, InstGaussianModel
-from scene import GaussianModel
+from scene import InstScene
+from scene.gaussian_model import InstGaussianModel
+from scene.vanilla_gaussian_model import GaussianModel
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
@@ -23,6 +25,12 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 import torch.nn.functional as F
+
+with open("./arguments/hyper_param.yaml", "r") as f:
+        hyper_param = yaml.safe_load(f)
+
+SCENE_NAME = hyper_param["SCENE_NAME"]
+empty_gaussian_threshold = hyper_param["gaussian"]["empty_gaussian_threshold"]  
 
 
 def save_image_pair_cv2(pred_img, gt_img, step, save_dir="./tmp"):
@@ -66,20 +74,6 @@ def training(dataset, opt, pipe, inst_gs, bg_gs, testing_iterations, saving_iter
         if bg_gs is None:
             bg_color = np.random.rand(3)
             background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-        # if network_gui.conn == None:
-        #     network_gui.try_connect()
-        # while network_gui.conn != None:
-        #     try:
-        #         net_image_bytes = None
-        #         custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
-        #         if custom_cam != None:
-        #             net_image = render(custom_cam, gaussians, pipe, background, scaling_modifer)["render"]
-        #             net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
-        #         network_gui.send(net_image_bytes, dataset.source_path)
-        #         if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
-        #             break
-        #     except Exception as e:
-        #         network_gui.conn = None
 
         iter_start.record()
 
@@ -104,11 +98,16 @@ def training(dataset, opt, pipe, inst_gs, bg_gs, testing_iterations, saving_iter
         # image = render_pkg["render"]
         # print("render time", time.time() - start_time)
 
+        # remove the unseen image
+        if visibility_filter.sum().item() < empty_gaussian_threshold:
+            # print(f"Iteration {iteration}: No visible points, skipping this iteration.")
+            continue
+
         if bg_gs is not None:
             gt_image = viewpoint_cam.original_image.cuda()
 
             if iteration % 1000 == 0:
-                save_image_pair_cv2(image, gt_image, iteration)
+                save_image_pair_cv2(image, gt_image, iteration, save_dir=f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/training_images")
 
             Ll1 = l1_loss(image, gt_image)
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
@@ -122,7 +121,7 @@ def training(dataset, opt, pipe, inst_gs, bg_gs, testing_iterations, saving_iter
             masked_gt_image = gt_image * mask3 + background.view(3, 1, 1).expand_as(gt_image) * (1 - mask3)
             
             if iteration % 1000 == 0:
-                save_image_pair_cv2(image, masked_gt_image, iteration)
+                save_image_pair_cv2(image, masked_gt_image, iteration, save_dir=f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/training_images")
                 
             Ll1 = l1_loss(image, masked_gt_image)
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, masked_gt_image))
@@ -144,9 +143,9 @@ def training(dataset, opt, pipe, inst_gs, bg_gs, testing_iterations, saving_iter
 
             # Log and save
             # training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
-            if (iteration in saving_iterations):
-                print("\n[ITER {}] Saving Gaussians".format(iteration))
-                scene.save(iteration)
+            # if (iteration in saving_iterations):
+            #     print("\n[ITER {}] Saving Gaussians".format(iteration))
+            #     scene.save(iteration)
 
             # Densification
             # if iteration < opt.densify_until_iter:
@@ -168,85 +167,18 @@ def training(dataset, opt, pipe, inst_gs, bg_gs, testing_iterations, saving_iter
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
-                torch.save((inst_gs.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+                torch.save((inst_gs.capture(), iteration), f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/chkpnt{iteration}.pth")
 
 
 if __name__ == "__main__":
 
-    # load secne_graph from json file  
-    import json
-    scene_graph_path = '/root/autodl-tmp/data/replica_room/room0/scene_graph.json'
-    with open(scene_graph_path, 'r') as f:
-        scene_graph = json.load(f)  
-    print(f"Scene graph loaded from {scene_graph_path}")
-
     shared_gaussians = InstGaussianModel(sh_degree=3)
-    bg_gaussians = GaussianModel(sh_degree=3)
-    bg_gaussians.load_ply("/root/autodl-tmp/data/replica_room/room0/seg_inst/bg.ply")
+    shared_gaussians.load_scene_graph(scene_graph_prefix=f"/root/autodl-tmp/data/{SCENE_NAME}")
 
-    bg_gaussians.frozen()
-
-    shared_xyz = None
-    shared_color = None
-    template_intervals = {}
-    transforms = {}
-    features_dc_offsets = {}
-    features_rest_offsets = {}
-
-    for temp_map in scene_graph:
-
-        template_name = temp_map["template_id"]
-        print(f"Processing template: {template_name}")
-
-        template_gs = GaussianModel(sh_degree=3)
-        # 1. 加载所有实例，转换到模板空间
-        all_instances = []
-        for inst in temp_map["instances"]:
-            inst_path = f'/root/autodl-tmp/data/replica_room/room0/seg_inst/{inst["instance_id"]}.ply'
-            gs = GaussianModel(sh_degree=3)
-            gs.load_ply(inst_path)
-            # 注意：这里转置了一下，是为了方便与xyz做矩阵乘法
-            t = torch.from_numpy(np.array(inst["transform"]).T).float().to("cuda")
-            gs._xyz = geom_transform_points(gs.get_xyz, t)
-            gs._rotation = geom_transform_quat(gs.get_rotation, t.T)
-            all_instances.append(gs)
-            if template_name not in transforms:
-                transforms[template_name] = []
-            transforms[template_name].append(torch.inverse(t))
-
-        # 2. 合并所有模型为 shared_model（几何 & shared SH）
-        template_gs.merge(all_instances)
-
-        # 3. 为每个实例初始化 SH offset（同 shape）
-        features_dc_offsets[template_name] = [torch.zeros_like(template_gs.get_features_dc, requires_grad=True) for _ in all_instances]
-        features_rest_offsets[template_name] = [torch.zeros_like(template_gs.get_features_rest, requires_grad=True) for _ in all_instances]
-
-        if shared_xyz is None:
-            start_idx = 0
-            shared_xyz = template_gs.get_xyz.detach().cpu().numpy()
-        else:
-            start_idx = shared_xyz.shape[0]
-            shared_xyz = np.concatenate([shared_xyz, template_gs.get_xyz.detach().cpu().numpy()], axis=0)
-        end_idx = shared_xyz.shape[0]
-
-        if shared_color is None:
-            shared_color = template_gs.get_features_dc.detach().cpu().numpy()
-        else:
-            shared_color = np.concatenate([shared_color, template_gs.get_features_dc.detach().cpu().numpy()], axis=0)
-        template_intervals[template_name] = [start_idx, end_idx]
-        
-    shared_color = np.squeeze(shared_color)
-    
-    shared_pc = BasicPointCloud(shared_xyz, shared_color, np.zeros((shared_xyz.shape[0], 3)))
-    shared_gaussians.create_from_pcd(shared_pc, spatial_lr_scale=0.1)
-    shared_gaussians.set_template_intervals(template_intervals)
-    shared_gaussians.set_transforms(transforms)
-    shared_gaussians.set_features_dc_offsets(features_dc_offsets)
-    shared_gaussians.set_features_rest_offsets(features_rest_offsets)
-
-    # shared_gaussians.save_ply("./tmp/test.ply")
-
-    # print(vars(shared_gaussians))
+    bg_gaussians = None
+    # bg_gaussians = GaussianModel(sh_degree=3)
+    # bg_gaussians.load_ply(f"/root/autodl-tmp/data/{SCENE_NAME}/seg_inst/bg.ply")
+    # bg_gaussians.frozen()
     
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")
@@ -273,7 +205,7 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-
+    
     training(lp.extract(args), op.extract(args), pp.extract(args), shared_gaussians, bg_gaussians, args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
 
     # All done

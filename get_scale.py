@@ -8,7 +8,9 @@ from argparse import ArgumentParser, Namespace
 import cv2
 
 from arguments import ModelParams, PipelineParams
-from scene import Scene, GaussianModel, FeatureGaussianModel
+from scene import Scene
+from scene.vanilla_gaussian_model import GaussianModel
+from scene.gaussian_model_ff import FeatureGaussianModel
 
 import gaussian_renderer
 import importlib
@@ -101,7 +103,7 @@ if __name__ == '__main__':
         # print(image_path)
         image = cv2.imread(os.path.join(os.path.join(dataset.source_path, 'images'), image_path))
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        masks = torch.load(os.path.join(os.path.join(dataset.source_path, 'grounded_sam_masks'), image_path.replace('jpg', 'pt').replace('JPG', 'pt').replace('png', 'pt')))
+        masks = torch.load(os.path.join(os.path.join(dataset.source_path, 'sam_masks'), image_path.replace('jpg', 'pt').replace('JPG', 'pt').replace('png', 'pt')))
         # N_mask, C
 
         images_masks[image_path.split('.')[0]] = masks.cpu().float()
@@ -161,7 +163,5 @@ if __name__ == '__main__':
             if torch.isnan(scale[mask_id]) or torch.isinf(scale[mask_id]):
                 print(f"Warning: Scale for mask {mask_id} in image {view.image_name} is NaN or Inf, setting to 0.")
                 scale[mask_id] = 0.0
-        
-        print(scale.shape)
 
         torch.save(scale, os.path.join(OUTPUT_DIR, view.image_name + '.pt'))

@@ -14,7 +14,9 @@ import torch
 from random import randint
 from gaussian_renderer import render_contrastive_feature
 import sys
-from scene import Scene, GaussianModel, FeatureGaussianModel
+from scene import Scene
+from scene.vanilla_gaussian_model import GaussianModel
+from scene.gaussian_model_ff import FeatureGaussianModel
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
@@ -22,7 +24,6 @@ from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams, get_combined_args
 
 import numpy as np
-
 
 import torch
 from torch import nn

@@ -16,7 +16,8 @@ import numpy as np
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
 import sys
-from scene import Scene, GaussianModel
+from scene import Scene
+from scene.vanilla_gaussian_model import GaussianModel
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm

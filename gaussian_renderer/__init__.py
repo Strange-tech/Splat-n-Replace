@@ -12,8 +12,8 @@
 import torch
 import math
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
-from scene.gaussian_model import GaussianModel
-from instanced_scene.gaussian_model import InstGaussianModel
+from scene.vanilla_gaussian_model import GaussianModel
+from scene.gaussian_model import InstGaussianModel
 from utils.sh_utils import eval_sh
 
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, filtered_mask = None):
@@ -386,31 +386,6 @@ def instanced_render(viewpoint_camera, inst_gs: InstGaussianModel, bg_gs: Gaussi
     
     Background tensor (bg_color) must be on GPU!
     """
-    # (full_xyz, full_scaling, full_rotation, full_opacity, full_features_dc, full_features_rest) = inst_gs.instancing()
-    # full_features = torch.cat([full_features_dc, full_features_rest], dim=1).to("cuda")
-
-    # whole_xyz = torch.cat([bg_gs.get_xyz, full_xyz], dim=0).to("cuda")
-    # whole_opacity = torch.cat([bg_gs.get_opacity, full_opacity], dim=0).to("cuda")
-    # whole_scaling = torch.cat([bg_gs.get_scaling, full_scaling], dim=0).to("cuda")
-    # whole_rotation = torch.cat([bg_gs.get_rotation, full_rotation], dim=0).to("cuda")
-    # whole_features_dc = torch.cat([bg_gs.get_features_dc, full_features_dc], dim=0).to("cuda")
-    # whole_features_rest = torch.cat([bg_gs.get_features_rest, full_features_rest], dim=0).to("cuda")
-    # whole_features = torch.cat([whole_features_dc, whole_features_rest], dim=1).to("cuda")
-
-    # (trans_xyz, trans_rotation, trans_scaling, trans_opacity, trans_features_dc, trans_features_rest) = inst_gs.instancing()
-    # trans_features = torch.cat([trans_features_dc, trans_features_rest], dim=1).to("cuda")
-    # full_xyz = torch.cat([inst_gs.get_xyz, trans_xyz], dim=0)
-    # full_rotation = torch.cat([inst_gs.get_rotation, trans_rotation], dim=0)
-    # full_scaling = torch.cat([inst_gs.get_scaling, trans_scaling], dim=0)
-    # full_opacity = torch.cat([inst_gs.get_opacity, trans_opacity], dim=0)
-    # full_features = torch.cat([inst_gs.get_features, trans_features], dim=0)
-
-    # all_instances = inst_gs.instancing()
-    # all_instances = all_instances[:2]
-    # rendered_images = []
-
-    # for (trans_xyz, trans_rotation, trans_scaling, trans_opacity, trans_features_dc, trans_features_rest) in all_instances:
-    # trans_features = torch.cat([trans_features_dc, trans_features_rest], dim=1).to("cuda")
 
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
     if bg_gs is not None:
