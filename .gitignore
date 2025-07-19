@@ -1,8 +1,2 @@
-third_party/
-submodules/
-segmentation_res/
-output/
-tmp/
-point_cloud/
 __pycache__/
 **/__pycache__/
