@@ -1,0 +1,18 @@
+# This yaml contains all hyperparameters for the Splat-n-Replace model.
+
+gaussian:
+  batch_size: 32
+  num_samples: 1024
+  num_iterations: 10_000
+  learning_rate: 0.001
+
+mast3r:
+  image_size: 512
+
+registration:
+  ## scene: replica_room/office2
+  voxel_size: 0.1
+  threshold: 0.2
+  ## scene: replica_room/room0
+  # voxel_size: 0.05
+  # threshold: 0.08

@@ -16,7 +16,7 @@ import os
 def mkdir_p(folder_path):
     # Creates a directory. equivalent to using mkdir -p on the command line
     try:
-        makedirs(folder_path)
+        makedirs(folder_path, exist_ok=True)
     except OSError as exc: # Python >2.5
         if exc.errno == EEXIST and path.isdir(folder_path):
             pass
@@ -45,3 +45,16 @@ def searchForMaxIteration(folder, target = "scene"):
         return max(saved_iters)
     except:
         return None
+
+def print_w_color(text, color='white'):
+    colors = {
+        'red': '\033[91m',
+        'green': '\033[92m',
+        'yellow': '\033[93m',
+        'blue': '\033[94m',
+        'magenta': '\033[95m',
+        'cyan': '\033[96m',
+        'white': '\033[97m',
+        'reset': '\033[0m'
+    }
+    print(f"{colors[color]}{text}{colors['reset']}")

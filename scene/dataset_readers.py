@@ -161,7 +161,7 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, need_features=False, nee
 
     reading_dir = "images" if images == None else images
     feature_dir = "clip_features"
-    mask_dir = "grounded_sam_masks"
+    mask_dir = "sam_masks"
     mask_scale_dir = "mask_scales"
 
     cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir), features_folder=os.path.join(path, feature_dir) if need_features else None, masks_folder=os.path.join(path, mask_dir) if need_masks else None, mask_scale_folder=os.path.join(path, mask_scale_dir) if need_masks else None, sample_rate=sample_rate, allow_principle_point_shift = allow_principle_point_shift)
