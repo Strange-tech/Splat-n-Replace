@@ -152,10 +152,12 @@ class InstGaussianModel:
                 # opacity stays same
                 all_instances_opacity.append(temp_opacity)
                 # feature_dc
-                trans_features_dc = 0.8 * temp_features_dc + 0.2 * self.features_dc_offsets[k][idx]
+                # trans_features_dc = temp_features_dc + self.features_dc_offsets[k][idx]
+                trans_features_dc = temp_features_dc
                 all_instances_features_dc.append(trans_features_dc)
                 # feature_rest
-                trans_features_rest = 0.8 * temp_features_rest + 0.2 * self.features_rest_offsets[k][idx]
+                # trans_features_rest = temp_features_rest + self.features_rest_offsets[k][idx]
+                trans_features_rest = temp_features_rest
                 all_instances_features_rest.append(trans_features_rest)
 
         full_xyz = torch.cat(all_instances_xyz, dim=0)

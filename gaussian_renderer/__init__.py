@@ -478,7 +478,9 @@ def instanced_render(viewpoint_camera, inst_gs: InstGaussianModel, bg_gs: Gaussi
         rotations = rotations,
         cov3D_precomp = cov3D_precomp)
 
-    # print(radii.shape, radii)
+    # clip the shared gaussian 
+    l = inst_gs.get_full_xyz.shape[0]
+    radii = radii[-l:]
     
     # rendered_images.append(rendered_image)
 

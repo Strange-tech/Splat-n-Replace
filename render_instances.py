@@ -18,7 +18,7 @@ from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from utils.graphics_utils import BasicPointCloud
 import cv2
-import gc
+from torchvision.utils import save_image
 
 with open("./arguments/hyper_param.yaml", "r") as f:
         hyper_param = yaml.safe_load(f)
@@ -51,6 +51,16 @@ if __name__ == "__main__":
     cameras = scene.getTrainCameras()
 
     inst_gaussians.instancing()
+
+    save_path = f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/rendered_images"
+    os.makedirs(save_path, exist_ok=True)
+
+    for idx, view in enumerate(cameras):
+        # Render the scene
+        rendered_image = instanced_render(view, inst_gaussians, bg_gaussians, pp.extract(args), background)["render"]
+        # Save the rendered image
+        save_image(rendered_image, f'{save_path}/{idx}.jpg')
+
     inst_gaussians.save_ply(f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/instanced_gaussians.ply", instancing=True)
 
     # All done

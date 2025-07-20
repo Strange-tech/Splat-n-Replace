@@ -30,7 +30,8 @@ with open("./arguments/hyper_param.yaml", "r") as f:
         hyper_param = yaml.safe_load(f)
 
 SCENE_NAME = hyper_param["SCENE_NAME"]
-empty_gaussian_threshold = hyper_param["gaussian"]["empty_gaussian_threshold"]  
+empty_gaussian_threshold = hyper_param["gaussian"]["empty_gaussian_threshold"]
+mask_iterations_ratio = hyper_param["gaussian"]["mask_iterations_ratio"]  
 
 
 def save_image_pair_cv2(pred_img, gt_img, step, save_dir="./tmp"):
@@ -72,8 +73,9 @@ def training(dataset, opt, pipe, inst_gs, bg_gs, testing_iterations, saving_iter
         torch.cuda.empty_cache()    
         
         if bg_gs is None:
-            bg_color = np.random.rand(3)
-            background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+            # bg_color = np.random.rand(3)
+            # background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+            background = torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
 
         iter_start.record()
 
@@ -103,28 +105,26 @@ def training(dataset, opt, pipe, inst_gs, bg_gs, testing_iterations, saving_iter
             # print(f"Iteration {iteration}: No visible points, skipping this iteration.")
             continue
 
-        if bg_gs is not None:
-            gt_image = viewpoint_cam.original_image.cuda()
+        gt_image = viewpoint_cam.original_image.cuda()
 
-            if iteration % 1000 == 0:
-                save_image_pair_cv2(image, gt_image, iteration, save_dir=f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/training_images")
+        # if bg_gs is None:
+        #     mask = torch.load(f'{dataset.source_path}/instance_masks/{viewpoint_cam.image_name}.pt')
+        #     mask3 = mask.unsqueeze(0).expand_as(gt_image)  # 变成 3 通道掩码
+        #     # gt_image = gt_image * mask3 + background.view(3, 1, 1).expand_as(gt_image) * (1 - mask3)
+        #     gt_image = gt_image * mask3
+        #     image = image * mask3
 
-            Ll1 = l1_loss(image, gt_image)
-            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-            # loss += 1e-2 * torch.mean(torch.abs(inst_gs.feature_dc_offset)) +
-            #         1e-2 * torch.mean(torch.abs(feature_rest_offset))
-        else:
-            # Loss
-            gt_image = viewpoint_cam.original_image.cuda()
+        if iteration < int(mask_iterations_ratio * opt.iterations):
             mask = torch.load(f'{dataset.source_path}/instance_masks/{viewpoint_cam.image_name}.pt')
             mask3 = mask.unsqueeze(0).expand_as(gt_image)  # 变成 3 通道掩码
-            masked_gt_image = gt_image * mask3 + background.view(3, 1, 1).expand_as(gt_image) * (1 - mask3)
+            gt_image = gt_image * mask3
+            image = image * mask3
             
-            if iteration % 1000 == 0:
-                save_image_pair_cv2(image, masked_gt_image, iteration, save_dir=f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/training_images")
-                
-            Ll1 = l1_loss(image, masked_gt_image)
-            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, masked_gt_image))
+        if iteration % 1000 == 0:
+            save_image_pair_cv2(image, gt_image, iteration, save_dir=f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/training_images")
+        
+        Ll1 = l1_loss(image, gt_image)
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         
         loss.backward()
 
@@ -175,10 +175,10 @@ if __name__ == "__main__":
     shared_gaussians = InstGaussianModel(sh_degree=3)
     shared_gaussians.load_scene_graph(scene_graph_prefix=f"/root/autodl-tmp/data/{SCENE_NAME}")
 
-    bg_gaussians = None
-    # bg_gaussians = GaussianModel(sh_degree=3)
-    # bg_gaussians.load_ply(f"/root/autodl-tmp/data/{SCENE_NAME}/seg_inst/bg.ply")
-    # bg_gaussians.frozen()
+    # bg_gaussians = None
+    bg_gaussians = GaussianModel(sh_degree=3)
+    bg_gaussians.load_ply(f"/root/autodl-tmp/data/{SCENE_NAME}/seg_inst/bg.ply")
+    bg_gaussians.frozen()
     
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")
