@@ -150,9 +150,10 @@ def training(dataset, opt, pipe, all_temp_gs, bg_gs, testing_iterations, saving_
             #     scene.save(iteration)
 
             # Densification
+            print(opt.densify_until_iter)
             if iteration < opt.densify_until_iter:
                 for temp_gs in all_temp_gs:
-                    # print(visibility_filter.shape, temp_gs.get_full_xyz.shape, viewspace_point_tensor.shape)
+                    print("FULL XYZ:", temp_gs.get_full_xyz.shape)
                     m_n = mask_note[temp_gs.template_id]
                     v_f_1 = masked_interval(visibility_filter, m_n[0], m_n[1])
                     v_f_2 = visibility_filter[m_n[0]:m_n[1]]
@@ -183,7 +184,7 @@ def training(dataset, opt, pipe, all_temp_gs, bg_gs, testing_iterations, saving_
 
 if __name__ == "__main__":
 
-    with open(f'/root/autodl-tmp/data/replica_room/office2/scene_graph.json', 'r') as f:
+    with open(f'/root/autodl-tmp/data/{SCENE_NAME}/scene_graph.json', 'r') as f:
         scene_graph = json.load(f)  
 
     all_template_gs = []
@@ -197,7 +198,7 @@ if __name__ == "__main__":
         all_instances = []
         transforms = []
         for inst in temp_map["instances"]:
-            inst_path = f'/root/autodl-tmp/data/replica_room/office2/seg_inst/{inst["instance_id"]}.ply'
+            inst_path = f'/root/autodl-tmp/data/{SCENE_NAME}/seg_inst/{inst["instance_id"]}.ply'
             gs = GaussianModel(sh_degree=3)
             gs.load_ply(inst_path)
             # 注意：这里转置了一下，是为了方便与xyz做矩阵乘法
