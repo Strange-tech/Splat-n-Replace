@@ -19,6 +19,7 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 from utils.graphics_utils import BasicPointCloud
 import cv2
 import gc
+import json
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -31,8 +32,12 @@ with open("./arguments/hyper_param.yaml", "r") as f:
 
 SCENE_NAME = hyper_param["SCENE_NAME"]
 empty_gaussian_threshold = hyper_param["gaussian"]["empty_gaussian_threshold"]
-mask_iterations_ratio = hyper_param["gaussian"]["mask_iterations_ratio"]  
+mask_iterations_ratio = hyper_param["gaussian"]["mask_iterations_ratio"] 
 
+def masked_interval(mask: torch.Tensor, s: int, e: int):
+    new_mask = torch.zeros_like(mask, dtype=torch.bool)
+    new_mask[s:e] = mask[s:e]
+    return new_mask
 
 def save_image_pair_cv2(pred_img, gt_img, step, save_dir="./tmp"):
     import os
@@ -45,13 +50,17 @@ def save_image_pair_cv2(pred_img, gt_img, step, save_dir="./tmp"):
     cv2.imwrite(f"{save_dir}/pred_{step:05d}.png", cv2.cvtColor(pred_np, cv2.COLOR_RGB2BGR))
     cv2.imwrite(f"{save_dir}/gt_{step:05d}.png", cv2.cvtColor(gt_np, cv2.COLOR_RGB2BGR))
 
-def training(dataset, opt, pipe, inst_gs, bg_gs, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(dataset, opt, pipe, all_temp_gs, bg_gs, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
-    scene = InstScene(dataset, inst_gs)
-    inst_gs.training_setup(opt)
-    if checkpoint:
-        (model_params, first_iter) = torch.load(checkpoint)
-        inst_gs.restore(model_params, opt)
+    scene = InstScene(dataset, all_temp_gs)
+
+    # construct the mask of every temp_gaussian
+    for temp_gs in all_temp_gs:
+        temp_gs.training_setup(opt)
+
+    # if checkpoint:
+    #     (model_params, first_iter) = torch.load(checkpoint)
+    #     inst_gs.restore(model_params, opt)
 
     if bg_gs is not None:
         bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
@@ -65,12 +74,13 @@ def training(dataset, opt, pipe, inst_gs, bg_gs, testing_iterations, saving_iter
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
 
-    # inst_gs.instancing()
-
     for iteration in range(first_iter, opt.iterations + 1):   
-        inst_gs.instancing()
-        gc.collect()
-        torch.cuda.empty_cache()    
+        mask_note = {}
+        start_idx = 0
+        for temp_gs in all_temp_gs:
+            temp_gs.instancing() 
+            mask_note[temp_gs.template_id] = [start_idx, start_idx + temp_gs.get_full_xyz.shape[0]]
+            start_idx += temp_gs.get_full_xyz.shape[0]
         
         if bg_gs is None:
             # bg_color = np.random.rand(3)
@@ -79,11 +89,11 @@ def training(dataset, opt, pipe, inst_gs, bg_gs, testing_iterations, saving_iter
 
         iter_start.record()
 
-        inst_gs.update_learning_rate(iteration)
-
-        # Every 1000 its we increase the levels of SH up to a maximum degree
-        if iteration % 1000 == 0:
-            inst_gs.oneupSHdegree()
+        for temp_gs in all_temp_gs:
+            temp_gs.update_learning_rate(iteration)
+            # Every 1000 its we increase the levels of SH up to a maximum degree
+            if iteration % 1000 == 0:
+                temp_gs.oneupSHdegree()
 
         # Pick a random Camera
         if not viewpoint_stack:
@@ -95,7 +105,7 @@ def training(dataset, opt, pipe, inst_gs, bg_gs, testing_iterations, saving_iter
             pipe.debug = True
 
         # start_time = time.time()
-        render_pkg = instanced_render(viewpoint_cam, inst_gs, bg_gs, pipe, background)
+        render_pkg = instanced_render(viewpoint_cam, all_temp_gs, bg_gs, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         # image = render_pkg["render"]
         # print("render time", time.time() - start_time)
@@ -106,13 +116,6 @@ def training(dataset, opt, pipe, inst_gs, bg_gs, testing_iterations, saving_iter
             continue
 
         gt_image = viewpoint_cam.original_image.cuda()
-
-        # if bg_gs is None:
-        #     mask = torch.load(f'{dataset.source_path}/instance_masks/{viewpoint_cam.image_name}.pt')
-        #     mask3 = mask.unsqueeze(0).expand_as(gt_image)  # 变成 3 通道掩码
-        #     # gt_image = gt_image * mask3 + background.view(3, 1, 1).expand_as(gt_image) * (1 - mask3)
-        #     gt_image = gt_image * mask3
-        #     image = image * mask3
 
         if iteration < int(mask_iterations_ratio * opt.iterations):
             mask = torch.load(f'{dataset.source_path}/instance_masks/{viewpoint_cam.image_name}.pt')
@@ -135,9 +138,8 @@ def training(dataset, opt, pipe, inst_gs, bg_gs, testing_iterations, saving_iter
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             mse = F.mse_loss(image, gt_image)
             psnr = -10 * torch.log10(mse + 1e-8)  # 避免 log(0)
-            if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "PSNR": f"{psnr.item():.{2}f}"})
-                progress_bar.update(10)
+            progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "PSNR": f"{psnr.item():.{2}f}"})
+            progress_bar.update()
             if iteration == opt.iterations:
                 progress_bar.close()
 
@@ -148,32 +150,76 @@ def training(dataset, opt, pipe, inst_gs, bg_gs, testing_iterations, saving_iter
             #     scene.save(iteration)
 
             # Densification
-            # if iteration < opt.densify_until_iter:
-            #     # Keep track of max radii in image-space for pruning
-            #     inst_gs.max_radii2D[visibility_filter] = torch.max(inst_gs.max_radii2D[visibility_filter], radii[visibility_filter])
-            #     inst_gs.add_densification_stats(viewspace_point_tensor, visibility_filter)
+            if iteration < opt.densify_until_iter:
+                for temp_gs in all_temp_gs:
+                    # print(visibility_filter.shape, temp_gs.get_full_xyz.shape, viewspace_point_tensor.shape)
+                    m_n = mask_note[temp_gs.template_id]
+                    v_f_1 = masked_interval(visibility_filter, m_n[0], m_n[1])
+                    v_f_2 = visibility_filter[m_n[0]:m_n[1]]
 
-            #     if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-            #         size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-            #         inst_gs.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
-                
-            #     if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-            #         inst_gs.reset_opacity()
+                    # Keep track of max radii in image-space for pruning
+                    viewspace_point_tensor_grad = viewspace_point_tensor.grad
+
+                    temp_gs.max_radii2D[v_f_2] = torch.max(temp_gs.max_radii2D[v_f_2], radii[v_f_1])
+                    temp_gs.add_densification_stats(viewspace_point_tensor_grad[m_n[0]:m_n[1]], v_f_2)
+
+                    if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
+                        size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                        temp_gs.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+                    
+                    if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+                        temp_gs.reset_opacity()
 
             # Optimizer step
             if iteration < opt.iterations:
-                inst_gs.optimizer.step()
-                inst_gs.optimizer.zero_grad(set_to_none = True)
+                for temp_gs in all_temp_gs:
+                    temp_gs.optimizer.step()
+                    temp_gs.optimizer.zero_grad(set_to_none = True)
 
-            if (iteration in checkpoint_iterations):
-                print("\n[ITER {}] Saving Checkpoint".format(iteration))
-                torch.save((inst_gs.capture(), iteration), f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/chkpnt{iteration}.pth")
+            # if (iteration in checkpoint_iterations):
+            #     print("\n[ITER {}] Saving Checkpoint".format(iteration))
+            #     torch.save((inst_gs.capture(), iteration), f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/chkpnt{iteration}.pth")
 
 
 if __name__ == "__main__":
 
-    shared_gaussians = InstGaussianModel(sh_degree=3)
-    shared_gaussians.load_scene_graph(scene_graph_prefix=f"/root/autodl-tmp/data/{SCENE_NAME}")
+    with open(f'/root/autodl-tmp/data/replica_room/office2/scene_graph.json', 'r') as f:
+        scene_graph = json.load(f)  
+
+    all_template_gs = []
+
+    for temp_map in scene_graph:
+        template_id = temp_map["template_id"]
+        print(f"Processing template: {template_id}")
+
+        template_gs = InstGaussianModel(sh_degree=3)
+        # 1. 加载所有实例，转换到模板空间
+        all_instances = []
+        transforms = []
+        for inst in temp_map["instances"]:
+            inst_path = f'/root/autodl-tmp/data/replica_room/office2/seg_inst/{inst["instance_id"]}.ply'
+            gs = GaussianModel(sh_degree=3)
+            gs.load_ply(inst_path)
+            # 注意：这里转置了一下，是为了方便与xyz做矩阵乘法
+            t = torch.from_numpy(np.array(inst["transform"]).T).float().to("cuda")
+            gs._xyz = geom_transform_points(gs.get_xyz, t)
+            gs._rotation = geom_transform_quat(gs.get_rotation, t.T)
+            all_instances.append(gs)
+            transforms.append(torch.inverse(t))
+
+        # 2. 合并所有模型为 shared_model（几何 & shared SH）
+        template_gs.merge(all_instances)
+
+        # 3. 为每个实例初始化 SH offset（同 shape）
+        features_dc_offsets = [torch.zeros_like(template_gs.get_features_dc, requires_grad=True) for _ in all_instances]
+        features_rest_offsets = [torch.zeros_like(template_gs.get_features_rest, requires_grad=True) for _ in all_instances]
+    
+        template_gs.set_template_id(template_id)
+        template_gs.set_transforms(transforms)
+        template_gs.set_features_dc_offsets(features_dc_offsets)
+        template_gs.set_features_rest_offsets(features_rest_offsets)
+
+        all_template_gs.append(template_gs)
 
     # bg_gaussians = None
     bg_gaussians = GaussianModel(sh_degree=3)
@@ -206,7 +252,7 @@ if __name__ == "__main__":
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     
-    training(lp.extract(args), op.extract(args), pp.extract(args), shared_gaussians, bg_gaussians, args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    training(lp.extract(args), op.extract(args), pp.extract(args), all_template_gs, bg_gaussians, args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
 
     # All done
     print("\nTraining complete.")

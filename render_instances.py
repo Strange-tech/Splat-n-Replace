@@ -61,7 +61,9 @@ if __name__ == "__main__":
         # Save the rendered image
         save_image(rendered_image, f'{save_path}/{idx}.jpg')
 
-    inst_gaussians.save_ply(f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/instanced_gaussians.ply", instancing=True)
+        break
+
+    # inst_gaussians.save_ply(f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/instanced_gaussians.ply", instancing=True)
 
     # All done
     print("\nRender complete.")

@@ -14,7 +14,8 @@ import numpy as np
 from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation, farthest_point_sampling, random_point_sampling
 from torch import nn
 import os
-import json
+import re
+from copy import deepcopy
 from utils.system_utils import mkdir_p
 from utils.graphics_utils import geom_transform_quat, geom_transform_points
 from plyfile import PlyData, PlyElement
@@ -59,15 +60,13 @@ class InstGaussianModel:
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
-        # template_intervals: {template_name: [start_idx, end_idx], ...}
-        self.template_intervals = {}
-        # transforms: {template_name: [trans1, trans2, ...], ...}
-        self.transforms = {}
-        # features_dc_offsets: {template_name: [offset1, offset2, ...], ...}
-        self.features_dc_offsets = {}
-        # features_rest_offsets: {template_name: [offset1, offset2, ...], ...}
-        self.features_rest_offsets = {}
-        self.is_instanced = False
+        self.template_id = None
+        # transforms: [trans1, trans2, ...]
+        self.transforms = []
+        # features_dc_offsets: [offset1, offset2, ...]
+        self._features_dc_offsets = []
+        # features_rest_offsets: [offset1, offset2, ...]
+        self._features_rest_offsets = []
         self.setup_functions()
 
     def capture(self):
@@ -87,8 +86,8 @@ class InstGaussianModel:
             self.spatial_lr_scale,
             self.template_intervals,
             self.transforms,
-            self.features_dc_offsets,
-            self.features_rest_offsets
+            self._features_dc_offsets,
+            self._features_rest_offsets
         )
     
     def restore(self, model_args, training_args):
@@ -109,21 +108,20 @@ class InstGaussianModel:
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
-    
-    def set_template_intervals(self, template_intervals):
-        self.template_intervals = template_intervals
+
+    def set_template_id(self, template_id):
+        self.template_id = template_id
 
     def set_transforms(self, transforms):
         self.transforms = transforms
 
     def set_features_dc_offsets(self, features_dc_offsets):
-        self.features_dc_offsets = features_dc_offsets
+        self._features_dc_offsets = features_dc_offsets
 
     def set_features_rest_offsets(self, features_rest_offsets):
-        self.features_rest_offsets = features_rest_offsets
+        self._features_rest_offsets = features_rest_offsets
 
     def instancing(self):
-
         # self.is_instanced = True
         all_instances_xyz = []
         all_instances_scaling = []
@@ -132,51 +130,34 @@ class InstGaussianModel:
         all_instances_features_dc = []
         all_instances_features_rest = []
 
-        for k, v in self.template_intervals.items():
-            temp_xyz = self._xyz[v[0]:v[1]]
-            temp_scaling = self._scaling[v[0]:v[1]]
-            temp_rotation = self._rotation[v[0]:v[1]]
-            temp_opacity = self._opacity[v[0]:v[1]]
-            temp_features_dc = self._features_dc[v[0]:v[1]]
-            temp_features_rest = self._features_rest[v[0]:v[1]]
-            trans = self.transforms[k]
-            for idx, tran in enumerate(trans):
-                # xyz
-                trans_xyz = geom_transform_points(temp_xyz, tran)
-                all_instances_xyz.append(trans_xyz)
-                # scaling stays same
-                all_instances_scaling.append(temp_scaling)
-                # rotation
-                trans_rotation = geom_transform_quat(temp_rotation, tran.T)
-                all_instances_rotation.append(trans_rotation)
-                # opacity stays same
-                all_instances_opacity.append(temp_opacity)
-                # feature_dc
-                # trans_features_dc = temp_features_dc + self.features_dc_offsets[k][idx]
-                trans_features_dc = temp_features_dc
-                all_instances_features_dc.append(trans_features_dc)
-                # feature_rest
-                # trans_features_rest = temp_features_rest + self.features_rest_offsets[k][idx]
-                trans_features_rest = temp_features_rest
-                all_instances_features_rest.append(trans_features_rest)
+        for idx, tran in enumerate(self.transforms):
+            # xyz
+            trans_xyz = geom_transform_points(self._xyz, tran)
+            all_instances_xyz.append(trans_xyz)
+            # scaling stays same
+            all_instances_scaling.append(self._scaling)
+            # rotation
+            trans_rotation = geom_transform_quat(self._rotation, tran.T)
+            all_instances_rotation.append(self._rotation)
+            # opacity stays same
+            all_instances_opacity.append(self._opacity)
+            # feature_dc
+            trans_features_dc = self._features_dc + self._features_dc_offsets[idx]
+            all_instances_features_dc.append(trans_features_dc)
+            # feature_rest
+            trans_features_rest = self._features_rest + self._features_rest_offsets[idx]
+            all_instances_features_rest.append(trans_features_rest)
 
-        full_xyz = torch.cat(all_instances_xyz, dim=0)
-        full_scaling = torch.cat(all_instances_scaling, dim=0)
-        full_rotation = torch.cat(all_instances_rotation, dim=0)
-        full_opacity = torch.cat(all_instances_opacity, dim=0)
-        full_features_dc = torch.cat(all_instances_features_dc, dim=0)
-        full_features_rest = torch.cat(all_instances_features_rest, dim=0)
+        self.full_xyz = torch.cat(all_instances_xyz, dim=0)
+        self.full_scaling = torch.cat(all_instances_scaling, dim=0)
+        self.full_rotation = torch.cat(all_instances_rotation, dim=0)
+        self.full_opacity = torch.cat(all_instances_opacity, dim=0)
+        self.full_features_dc = torch.cat(all_instances_features_dc, dim=0)
+        self.full_features_rest = torch.cat(all_instances_features_rest, dim=0)
 
-        self.max_radii2D = torch.zeros((full_xyz.shape[0]), device="cuda")
-        self.xyz_gradient_accum = torch.zeros((full_xyz.shape[0], 1), device="cuda")
-        self.denom = torch.zeros((full_xyz.shape[0], 1), device="cuda")
-
-        self.full_xyz = full_xyz
-        self.full_scaling = full_scaling
-        self.full_rotation = full_rotation
-        self.full_opacity = full_opacity
-        self.full_features_dc = full_features_dc
-        self.full_features_rest = full_features_rest
+        self.max_radii2D = torch.zeros((self.full_xyz.shape[0]), device="cuda")
+        self.xyz_gradient_accum = torch.zeros((self.full_xyz.shape[0], 1), device="cuda")
+        self.denom = torch.zeros((self.full_xyz.shape[0], 1), device="cuda")
 
     @property
     def get_scaling(self):
@@ -265,34 +246,26 @@ class InstGaussianModel:
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
-        # self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
-        # self._mask = nn.Parameter(mask.requires_grad_(True))
         self.segment_times = 0
         self._mask = torch.ones((self._xyz.shape[0],), dtype=torch.float, device="cuda")
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
-        # self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        # self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
-
-            # {'params': [self._mask], 'lr': training_args.mask_lr, "name": "mask"},
-
             {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
             {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
         ]
-        for k, v in self.features_dc_offsets.items():
-            for idx, offset in enumerate(v):
-                l.append({'params': [offset], 'lr': training_args.feature_lr, 'name': f'{k}_f_dc_offset_{idx}'})
-        for k, v in self.features_rest_offsets.items():
-            for idx, offset in enumerate(v):
-                l.append({'params': [offset], 'lr': training_args.feature_lr / 20.0, 'name': f'{k}_f_rest_offset_{idx}'})
+
+        for idx, offset in enumerate(self._features_dc_offsets):
+            l.append({'params': [offset], 'lr': training_args.feature_lr, 'name': f'f_dc_offset_{idx}'})
+        for idx, offset in enumerate(self._features_rest_offsets):
+            l.append({'params': [offset], 'lr': training_args.feature_lr / 20.0, 'name': f'f_rest_offset_{idx}'})
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
@@ -367,8 +340,6 @@ class InstGaussianModel:
         xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
                         np.asarray(plydata.elements[0]["y"]),
                         np.asarray(plydata.elements[0]["z"])),  axis=1)
-        
-        # mask = np.asarray(plydata.elements[0]["mask"])[..., np.newaxis]
 
         opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
 
@@ -399,9 +370,6 @@ class InstGaussianModel:
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
 
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
-
-        # self._mask = nn.Parameter(torch.tensor(mask, dtype=torch.float, device="cuda").requires_grad_(True))
-
         self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
@@ -433,6 +401,7 @@ class InstGaussianModel:
         for group in self.optimizer.param_groups:
             stored_state = self.optimizer.state.get(group['params'][0], None)
             if stored_state is not None:
+                print(group['name'], stored_state["exp_avg"].shape)
                 stored_state["exp_avg"] = stored_state["exp_avg"][mask]
                 stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][mask]
 
@@ -451,14 +420,24 @@ class InstGaussianModel:
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
         self._xyz = optimizable_tensors["xyz"]
-
-        # self._mask = optimizable_tensors["mask"]
-
         self._features_dc = optimizable_tensors["f_dc"]
         self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
+
+        for idx, offset in enumerate(self._features_dc_offsets):
+            self._features_dc_offsets[idx] = optimizable_tensors[f"f_dc_offset_{idx}"]
+        for idx, offset in enumerate(self._features_rest_offsets):
+            self._features_rest_offsets[idx] = optimizable_tensors[f"f_rest_offset_{idx}"]
+
+        # for k, v in self.features_dc_offsets.items():
+        #     for idx, offset in enumerate(v):
+        #         self.features_dc_offsets[k][idx] = optimizable_tensors[f"{k}_f_dc_offset_{idx}"]
+
+        # for k, v in self.features_rest_offsets.items():
+        #     for idx, offset in enumerate(v):
+        #         self.features_rest_offsets[k][idx] = optimizable_tensors[f"{k}_f_rest_offset_{idx}"]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
@@ -487,32 +466,56 @@ class InstGaussianModel:
 
         return optimizable_tensors
 
-    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation):
+    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_features_dc_offsets, new_features_rest_offsets):
         d = {"xyz": new_xyz,
-        # "mask": new_mask,
         "f_dc": new_features_dc,
         "f_rest": new_features_rest,
         "opacity": new_opacities,
         "scaling" : new_scaling,
-        "rotation" : new_rotation}
+        "rotation" : new_rotation,
+        }
+
+        for idx, offset in enumerate(new_features_dc_offsets):
+            d[f"f_dc_offset_{idx}"] = offset
+        for idx, offset in enumerate(new_features_rest_offsets):
+            d[f"f_rest_offset_{idx}"] = offset
+
+        # for k, v in new_features_dc_offsets.items():
+        #     for idx, new_offset in enumerate(v):
+        #         d[f"{k}_f_dc_offset_{idx}"] = new_offset
+        
+        # for k, v in new_features_rest_offsets.items():
+        #     for idx, new_offset in enumerate(v):
+        #         d[f"{k}_f_rest_offset_{idx}"] = new_offset
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
         self._xyz = optimizable_tensors["xyz"]
-
-        # self._mask = optimizable_tensors["mask"]
-
         self._features_dc = optimizable_tensors["f_dc"]
         self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        for idx, offset in enumerate(self._features_dc_offsets):
+            self._features_dc_offsets[idx] = optimizable_tensors[f"f_dc_offset_{idx}"]
+        for idx, offset in enumerate(self._features_rest_offsets):
+            self._features_rest_offsets[idx] = optimizable_tensors[f"f_rest_offset_{idx}"]
+
+        # for k, v in self.features_dc_offsets.items():
+        #     for idx, offset in enumerate(v):
+        #         self.features_dc_offsets[k][idx] = optimizable_tensors[f"{k}_f_dc_offset_{idx}"]
+
+        # for k, v in self.features_rest_offsets.items():
+        #     for idx, offset in enumerate(v):
+        #         self.features_rest_offsets[k][idx] = optimizable_tensors[f"{k}_f_rest_offset_{idx}"]
+
+        self.xyz_gradient_accum = torch.zeros((self.full_xyz.shape[0], 1), device="cuda")
+        self.denom = torch.zeros((self.full_xyz.shape[0], 1), device="cuda")
+        self.max_radii2D = torch.zeros((self.full_xyz.shape[0]), device="cuda")
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.get_xyz.shape[0]
+        print("N_INIT_POINTS:", n_init_points)
         # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
         padded_grad[:grads.shape[0]] = grads.squeeze()
@@ -525,16 +528,33 @@ class InstGaussianModel:
         samples = torch.normal(mean=means, std=stds)
         rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)
         new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
-
-        # new_mask = self._mask[selected_pts_mask].repeat(N,1)
-
         new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
         new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
+        new_features_dc_offsets = deepcopy(self._features_dc_offsets)
+        new_features_rest_offsets = deepcopy(self._features_rest_offsets)
+
+        for idx, offset in enumerate(self._features_dc_offsets):
+            new_features_dc_offsets[idx] = offset[selected_pts_mask]
+        for idx, offset in enumerate(self._features_rest_offsets):
+            new_features_rest_offsets[idx] = offset[selected_pts_mask]
+
+        # for k, v in self.features_dc_offsets.items():
+        #     [s, e] = self.template_intervals[k]
+        #     s_p_m = selected_pts_mask[s:e]
+        #     for idx, offset in enumerate(v):
+        #         new_features_dc_offsets[k][idx] = offset[s_p_m].repeat(N,1,1)
+
+        # for k, v in self.features_rest_offsets.items():
+        #     [s, e] = self.template_intervals[k]
+        #     s_p_m = selected_pts_mask[s:e]
+        #     for idx, offset in enumerate(v):
+        #         new_features_rest_offsets[k][idx] = offset[s_p_m].repeat(N,1,1)
+
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_features_dc_offsets, new_features_rest_offsets)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
@@ -546,35 +566,83 @@ class InstGaussianModel:
                                               torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
         
         new_xyz = self._xyz[selected_pts_mask]
-
-        # new_mask = self._mask[selected_pts_mask]
-
         new_features_dc = self._features_dc[selected_pts_mask]
         new_features_rest = self._features_rest[selected_pts_mask]
         new_opacities = self._opacity[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
+        new_features_dc_offsets = deepcopy(self._features_dc_offsets)
+        new_features_rest_offsets = deepcopy(self._features_rest_offsets)
+
+        for idx, offset in enumerate(self._features_dc_offsets):
+            new_features_dc_offsets[idx] = offset[selected_pts_mask]
+        for idx, offset in enumerate(self._features_rest_offsets):
+            new_features_rest_offsets[idx] = offset[selected_pts_mask]
+
+        # for k, v in self.features_dc_offsets.items():
+        #     [s, e] = self.template_intervals[k]
+        #     s_p_m = selected_pts_mask[s:e]
+        #     for idx, offset in enumerate(v):
+        #         new_features_dc_offsets[k][idx] = offset[s_p_m]
+
+        # for k, v in self.features_rest_offsets.items():
+        #     [s, e] = self.template_intervals[k]
+        #     s_p_m = selected_pts_mask[s:e]
+        #     for idx, offset in enumerate(v):
+        #         new_features_rest_offsets[k][idx] = offset[s_p_m]
+            
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_features_dc_offsets, new_features_rest_offsets)
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
-        # self.densify_and_clone(grads, max_grad, extent)
-        # self.densify_and_split(grads, max_grad, extent)
+        # merge grads to the shape like _xyz
+        instances_num = len(self.transforms)
+        assert(self._xyz.shape[0] * instances_num == grads.shape[0])
+
+        all_inst_grads = torch.zeros((instances_num, self._xyz.shape[0]), device="cuda")
+        for i in range(instances_num):
+            start_idx = i * self._xyz.shape[0]
+            end_idx = start_idx + self._xyz.shape[0]
+            inst_grads = grads[start_idx:end_idx].squeeze(-1)
+            all_inst_grads[i] = inst_grads
+        grads = all_inst_grads.mean(dim=0)
+
+        # all_temp_grads = []
+        # for k, v in self.template_intervals.items():
+        #     template_length = v[1] - v[0]
+        #     instances_num = len(self.transforms[k])
+        #     start_idx = 0
+        #     temp_grads = torch.zeros((instances_num, template_length), device="cuda")
+        #     print(f"Processing template: {k}")
+        #     for i in range(instances_num):
+        #         start_idx = i * template_length
+        #         # print(start_idx, start_idx + template_length, grads.shape)
+        #         temp_grads[i] = grads[start_idx:(start_idx + template_length)].squeeze(-1)
+        #     mean_temp_grads = temp_grads.mean(dim=0)
+        #     # print(mean_temp_grads.shape)
+        #     all_temp_grads.append(mean_temp_grads)
+
+        # grads = torch.cat(all_temp_grads, dim=0)
+
+        self.densify_and_clone(grads, max_grad, extent)
+        self.densify_and_split(grads, max_grad, extent)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
+        print("1:", prune_mask.shape)
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
+        print("2:", prune_mask.shape)
         self.prune_points(prune_mask)
 
         torch.cuda.empty_cache()
 
-    def add_densification_stats(self, viewspace_point_tensor, update_filter):
-        self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
+    def add_densification_stats(self, viewspace_point_tensor_grad, update_filter):
+        self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor_grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
 
     def merge(self, all_instances, merge_features=False):
@@ -623,69 +691,6 @@ class InstGaussianModel:
         self.denom,
         optimizer,
         self.spatial_lr_scale,
-        self.template_intervals,
         self.transforms,
         self.features_dc_offsets,
         self.features_rest_offsets) = model
-
-    def load_scene_graph(self, scene_graph_prefix):
-        with open(f'{scene_graph_prefix}/scene_graph.json', 'r') as f:
-            scene_graph = json.load(f)  
-
-        shared_xyz = None
-        shared_color = None
-        template_intervals = {}
-        transforms = {}
-        features_dc_offsets = {}
-        features_rest_offsets = {}
-
-        for temp_map in scene_graph:
-            template_name = temp_map["template_id"]
-            print(f"Processing template: {template_name}")
-
-            template_gs = GaussianModel(sh_degree=3)
-            # 1. 加载所有实例，转换到模板空间
-            all_instances = []
-            for inst in temp_map["instances"]:
-                inst_path = f'{scene_graph_prefix}/seg_inst/{inst["instance_id"]}.ply'
-                gs = GaussianModel(sh_degree=3)
-                gs.load_ply(inst_path)
-                # 注意：这里转置了一下，是为了方便与xyz做矩阵乘法
-                t = torch.from_numpy(np.array(inst["transform"]).T).float().to("cuda")
-                gs._xyz = geom_transform_points(gs.get_xyz, t)
-                gs._rotation = geom_transform_quat(gs.get_rotation, t.T)
-                all_instances.append(gs)
-                if template_name not in transforms:
-                    transforms[template_name] = []
-                transforms[template_name].append(torch.inverse(t))
-
-            # 2. 合并所有模型为 shared_model（几何 & shared SH）
-            template_gs.merge(all_instances)
-
-            # 3. 为每个实例初始化 SH offset（同 shape）
-            features_dc_offsets[template_name] = [torch.zeros_like(template_gs.get_features_dc, requires_grad=True) for _ in all_instances]
-            features_rest_offsets[template_name] = [torch.zeros_like(template_gs.get_features_rest, requires_grad=True) for _ in all_instances]
-
-            if shared_xyz is None:
-                start_idx = 0
-                shared_xyz = template_gs.get_xyz.detach().cpu().numpy()
-            else:
-                start_idx = shared_xyz.shape[0]
-                shared_xyz = np.concatenate([shared_xyz, template_gs.get_xyz.detach().cpu().numpy()], axis=0)
-            end_idx = shared_xyz.shape[0]
-
-            if shared_color is None:
-                shared_color = template_gs.get_features_dc.detach().cpu().numpy()
-            else:
-                shared_color = np.concatenate([shared_color, template_gs.get_features_dc.detach().cpu().numpy()], axis=0)
-            template_intervals[template_name] = [start_idx, end_idx]
-            
-        shared_color = np.squeeze(shared_color)
-        
-        shared_pc = BasicPointCloud(shared_xyz, shared_color, np.zeros((shared_xyz.shape[0], 3)))
-        self.create_from_pcd(shared_pc, spatial_lr_scale=0.1)
-        self.set_template_intervals(template_intervals)
-        self.set_transforms(transforms)
-        self.set_features_dc_offsets(features_dc_offsets)
-        self.set_features_rest_offsets(features_rest_offsets)
-    

@@ -252,9 +252,9 @@ class Scene:
 
 class InstScene:
 
-    gaussians : InstGaussianModel
+    gaussians : list
 
-    def __init__(self, args : ModelParams, gaussians : InstGaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
+    def __init__(self, args : ModelParams, gaussians : list, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
         """b
         :param path: Path to colmap scene main folder.
         """
@@ -316,7 +316,9 @@ class InstScene:
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
-        self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+        for gs in self.gaussians:
+            gs.save_ply(os.path.join(point_cloud_path, "point_cloud_{}.ply".format(gs.template_id)))
+        # self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
 
     def getTrainCameras(self, scale=1.0):
         return self.train_cameras[scale]
