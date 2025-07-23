@@ -35,6 +35,7 @@ with open("./arguments/hyper_param.yaml", "r") as f:
 SCENE_NAME = hyper_param["SCENE_NAME"]
 empty_gaussian_threshold = hyper_param["gaussian"]["empty_gaussian_threshold"]
 mask_iterations_ratio = hyper_param["gaussian"]["mask_iterations_ratio"]
+template_iterations = hyper_param["gaussian"]["template_iterations"]
 
 
 def masked_interval(mask: torch.Tensor, s: int, e: int):
@@ -236,9 +237,15 @@ def training(
                     temp_gs.optimizer.step()
                     temp_gs.optimizer.zero_grad(set_to_none=True)
 
-            # if (iteration in checkpoint_iterations):
-            #     print("\n[ITER {}] Saving Checkpoint".format(iteration))
-            #     torch.save((inst_gs.capture(), iteration), f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/chkpnt{iteration}.pth")
+            if iteration in checkpoint_iterations:
+                model_dict = {}
+                for temp_gs in all_temp_gs:
+                    model_dict[temp_gs.template_id] = temp_gs.capture()
+                print("\n[ITER {}] Saving Checkpoint".format(iteration))
+                torch.save(
+                    model_dict,
+                    f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/chkpnt{iteration}.pth",
+                )
 
 
 if __name__ == "__main__":
@@ -317,6 +324,9 @@ if __name__ == "__main__":
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
 
+    args.source_path = f"/root/autodl-tmp/data/{SCENE_NAME}"
+    args.model_path = f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}"
+    args.iterations = template_iterations
     print("Optimizing " + args.model_path)
 
     # Initialize system state (RNG)
