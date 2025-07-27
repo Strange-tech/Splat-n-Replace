@@ -18,7 +18,9 @@ from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from utils.graphics_utils import BasicPointCloud
 import cv2
+from copy import deepcopy
 from torchvision.utils import save_image
+from scene.cameras import Camera
 
 with open("./arguments/hyper_param.yaml", "r") as f:
     hyper_param = yaml.safe_load(f)
@@ -29,7 +31,7 @@ SCENE_NAME = hyper_param["SCENE_NAME"]
 if __name__ == "__main__":
 
     model_dict = torch.load(
-        f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/chkpnt10000.pth"
+        f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/chkpnt30000.pth"
     )
     all_template_gs = []
     for k, model in model_dict.items():
@@ -54,7 +56,7 @@ if __name__ == "__main__":
     args.source_path = f"/root/autodl-tmp/data/{SCENE_NAME}"
     args.model_path = f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}"
 
-    background = torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
+    background = torch.tensor([0, 0, 0], dtype=torch.float32, device="cuda")
 
     scene = InstScene(lp.extract(args), all_template_gs)
     cameras = scene.getTrainCameras()
@@ -69,11 +71,25 @@ if __name__ == "__main__":
     save_path = f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/rendered_images"
     os.makedirs(save_path, exist_ok=True)
 
-    for idx, view in enumerate(cameras):
-        rendered_image = instanced_render(
-            view, all_template_gs, bg_gaussians, pp.extract(args), background
-        )["render"]
-        save_image(rendered_image, f"{save_path}/{idx}.jpg")
+    view = deepcopy(cameras[0])
+
+    ### test_3
+    # view.R = np.array([[-0.66, -0.03, -0.74], [-0.72, 0.24, 0.63], [0.16, 0.96, -0.19]])
+    # view.T = np.array([4.37, -0.95, 2.04])
+
+    ### test_2
+    # view.R = np.array([[-0.55, -0.34, 0.75], [0.41, 0.66, 0.61], [-0.71, 0.65, -0.22]])
+    # view.T = np.array([-3.94, -3.43, 1.67])
+
+    ### test
+    view.R = np.array([[0.23, -0.23, 0.94], [0.70, 0.71, 0.00], [-0.67, 0.66, 0.32]])
+    view.T = np.array([-5.05, -2.45, 6.23])
+    view.update()
+
+    rendered_image = instanced_render(
+        view, all_template_gs, bg_gaussians, pp.extract(args), background
+    )["render"]
+    save_image(rendered_image, f"{save_path}/test.jpg")
 
     # All done
     print("\nRender complete.")

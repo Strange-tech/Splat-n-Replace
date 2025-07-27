@@ -1,17 +1,18 @@
 # This yaml contains all hyperparameters for the Splat-n-Replace model.
-SCENE_NAME: "replica_room/room2"
+SCENE_NAME: "replica_room/office2"
 
 gaussian:
   batch_size: 32
   num_samples: 1024
   vanilla_iterations: 30000
   feature_iterations: 10000
-  template_iterations: 10000
+  template_iterations: 30000
   learning_rate: 0.001
   similarity_threshold: 0.6
   feature_dim: 32
   empty_gaussian_threshold: 1000
-  mask_iterations_ratio: 0.5
+  mask_iterations_ratio: 0.0
+  offsets_frozen_ratio: 0.5
 
 
 mast3r:

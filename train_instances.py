@@ -17,6 +17,7 @@ from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from utils.graphics_utils import BasicPointCloud
+from torchvision.utils import save_image
 import cv2
 import gc
 import json
@@ -36,6 +37,7 @@ SCENE_NAME = hyper_param["SCENE_NAME"]
 empty_gaussian_threshold = hyper_param["gaussian"]["empty_gaussian_threshold"]
 mask_iterations_ratio = hyper_param["gaussian"]["mask_iterations_ratio"]
 template_iterations = hyper_param["gaussian"]["template_iterations"]
+offsets_frozen_ratio = hyper_param["gaussian"]["offsets_frozen_ratio"]
 
 
 def masked_interval(mask: torch.Tensor, s: int, e: int):
@@ -63,7 +65,7 @@ def save_image_pair_cv2(pred_img, gt_img, step, save_dir="./tmp"):
     cv2.imwrite(f"{save_dir}/gt_{step:05d}.png", cv2.cvtColor(gt_np, cv2.COLOR_RGB2BGR))
 
 
-# training的逻辑是，前一半迭代，用掩码盖住背景，专门训练实例；后一半迭代，加入背景，训练整体视觉效果
+# training的逻辑是，前一frozen_offsets半迭代，用掩码盖住背景，专门训练实例；后一半迭代，加入背景，训练整体视觉效果
 def training(
     dataset,
     opt,
@@ -79,9 +81,9 @@ def training(
     first_iter = 0
     scene = InstScene(dataset, all_temp_gs)
 
-    # construct the mask of every temp_gaussian
     for temp_gs in all_temp_gs:
         temp_gs.training_setup(opt)
+        temp_gs.()
 
     # if checkpoint:
     #     (model_params, first_iter) = torch.load(checkpoint)
@@ -99,16 +101,23 @@ def training(
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
 
+    frozen = True
     for iteration in range(first_iter, opt.iterations + 1):
-        mask_note = {}
-        start_idx = 0
+
+        if (iteration > int(offsets_frozen_ratio * opt.iterations)) and frozen:
+            for temp_gs in all_temp_gs:
+                temp_gs.activate_offsets()
+            frozen = False
+
+        # mask_note = {}
+        # start_idx = 0
         for temp_gs in all_temp_gs:
             temp_gs.instancing()
-            mask_note[temp_gs.template_id] = [
-                start_idx,
-                start_idx + temp_gs.get_full_xyz.shape[0],
-            ]
-            start_idx += temp_gs.get_full_xyz.shape[0]
+            # mask_note[temp_gs.template_id] = [
+            #     start_idx,
+            #     start_idx + temp_gs.get_full_xyz.shape[0],
+            # ]
+            # start_idx += temp_gs.get_full_xyz.shape[0]
 
         if bg_gs is None:
             # bg_color = np.random.rand(3)
@@ -124,8 +133,9 @@ def training(
                 temp_gs.oneupSHdegree()
 
         # Pick a random Camera
+        cameras = scene.getTrainCameras()
         if not viewpoint_stack:
-            viewpoint_stack = scene.getTrainCameras().copy()
+            viewpoint_stack = cameras.copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
 
         # Render
@@ -146,6 +156,7 @@ def training(
         # print("render time", time.time() - start_time)
 
         # remove the unseen image
+        # print(visibility_filter.shape)
         if visibility_filter.sum().item() < empty_gaussian_threshold:
             # print(f"Iteration {iteration}: No visible points, skipping this iteration.")
             continue
@@ -196,40 +207,40 @@ def training(
             #     scene.save(iteration)
 
             # Densification
-            if iteration < opt.densify_until_iter:
-                for temp_gs in all_temp_gs:
-                    m_n = mask_note[temp_gs.template_id]
-                    v_f_1 = masked_interval(visibility_filter, m_n[0], m_n[1])
-                    v_f_2 = visibility_filter[m_n[0] : m_n[1]]
+            # if iteration < opt.densify_until_iter:
+            #     for temp_gs in all_temp_gs:
+            #         m_n = mask_note[temp_gs.template_id]
+            #         v_f_1 = masked_interval(visibility_filter, m_n[0], m_n[1])
+            #         v_f_2 = visibility_filter[m_n[0] : m_n[1]]
 
-                    # Keep track of max radii in image-space for pruning
-                    viewspace_point_tensor_grad = viewspace_point_tensor.grad
+            #         # Keep track of max radii in image-space for pruning
+            #         viewspace_point_tensor_grad = viewspace_point_tensor.grad
 
-                    temp_gs.max_radii2D[v_f_2] = torch.max(
-                        temp_gs.max_radii2D[v_f_2], radii[v_f_1]
-                    )
-                    temp_gs.add_densification_stats(
-                        viewspace_point_tensor_grad[m_n[0] : m_n[1]], v_f_2
-                    )
+            #         temp_gs.max_radii2D[v_f_2] = torch.max(
+            #             temp_gs.max_radii2D[v_f_2], radii[v_f_1]
+            #         )
+            #         temp_gs.add_densification_stats(
+            #             viewspace_point_tensor_grad[m_n[0] : m_n[1]], v_f_2
+            #         )
 
-                    if (
-                        iteration > opt.densify_from_iter
-                        and iteration % opt.densification_interval == 0
-                    ):
-                        size_threshold = (
-                            20 if iteration > opt.opacity_reset_interval else None
-                        )
-                        temp_gs.densify_and_prune(
-                            opt.densify_grad_threshold,
-                            0.005,
-                            scene.cameras_extent,
-                            size_threshold,
-                        )
+            #         if (
+            #             iteration > opt.densify_from_iter
+            #             and iteration % opt.densification_interval == 0
+            #         ):
+            #             size_threshold = (
+            #                 20 if iteration > opt.opacity_reset_interval else None
+            #             )
+            #             temp_gs.densify_and_prune(
+            #                 opt.densify_grad_threshold,
+            #                 0.005,
+            #                 scene.cameras_extent,
+            #                 size_threshold,
+            #             )
 
-                    if iteration % opt.opacity_reset_interval == 0 or (
-                        dataset.white_background and iteration == opt.densify_from_iter
-                    ):
-                        temp_gs.reset_opacity()
+            #         if iteration % opt.opacity_reset_interval == 0 or (
+            #             dataset.white_background and iteration == opt.densify_from_iter
+            #         ):
+            #             temp_gs.reset_opacity()
 
             # Optimizer step
             if iteration < opt.iterations:
@@ -238,6 +249,17 @@ def training(
                     temp_gs.optimizer.zero_grad(set_to_none=True)
 
             if iteration in checkpoint_iterations:
+                save_path = f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/rendered_images_{iteration}"
+                os.makedirs(save_path, exist_ok=True)
+                for idx, view in enumerate(cameras):
+                    render_img = instanced_render(
+                        view, all_temp_gs, bg_gs, pipe, background
+                    )["render"]
+                    save_image(
+                        render_img,
+                        f"{save_path}/{idx}.jpg",
+                    )
+
                 model_dict = {}
                 for temp_gs in all_temp_gs:
                     model_dict[temp_gs.template_id] = temp_gs.capture()
@@ -277,7 +299,7 @@ if __name__ == "__main__":
             transforms.append(torch.inverse(t))
 
         # 2. 合并所有模型为 shared_model（几何 & shared SH）
-        template_gs.merge(all_instances)
+        template_gs.merge(all_instances, mode="max")
 
         # 3. 为每个实例初始化 SH offset（同 shape）
         features_dc_offsets = [
@@ -288,11 +310,16 @@ if __name__ == "__main__":
             torch.zeros_like(template_gs.get_features_rest, requires_grad=True)
             for _ in all_instances
         ]
+        opacity_offsets = [
+            torch.zeros_like(template_gs.get_opacity, requires_grad=True)
+            for _ in all_instances
+        ]
 
         template_gs.set_template_id(template_id)
         template_gs.set_transforms(transforms)
         template_gs.set_features_dc_offsets(features_dc_offsets)
         template_gs.set_features_rest_offsets(features_rest_offsets)
+        template_gs.set_opacity_offsets(opacity_offsets)
 
         all_template_gs.append(template_gs)
 
@@ -318,7 +345,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument(
-        "--checkpoint_iterations", nargs="+", type=int, default=[5_000, 10_000]
+        "--checkpoint_iterations", nargs="+", type=int, default=[10_000, 30_000]
     )
     parser.add_argument("--start_checkpoint", type=str, default=None)
     args = parser.parse_args(sys.argv[1:])

@@ -1,4 +1,4 @@
-SCENE_NAME=replica_room/office0
+SCENE_NAME=BlendedMVS/green_houses
 DATASET_PATH=/root/autodl-tmp/data/$SCENE_NAME
 PREFIX=/Splat-n-Replace
 
@@ -14,11 +14,12 @@ PREFIX=/Splat-n-Replace
 # # --text "ground. house. car. tree. grass."
 # # --text "sofa. table. floor. wall. ceiling. screen. chair. ottoman. door. pillow."
 # # --text "table. floor. wall. window. chair. door. picture. shelf. vase."
+# # --text "screen. world map. plant. pot. whiteboard. carpet. creature. wall. chair. table. door. sofa."
 
 # cd $PREFIX/third_party/Grounded-SAM-2
 # echo "Running Grounded-SAM-2 tracking..."
 # python grounded_sam2_tracking_demo_with_continuous_id_gd1.5.py \
-#     --text "screen. world map. plant. pot. whiteboard. carpet. creature. wall. chair. table. door. sofa." \
+#     --text "house." \
 #     --video_dir $DATASET_PATH/images/ \
 #     --output_dir /root/autodl-tmp/output/$SCENE_NAME/
 
@@ -28,17 +29,18 @@ PREFIX=/Splat-n-Replace
 #     --input_dir /root/autodl-tmp/output/$SCENE_NAME/mask_data/ \
 #     --output_dir $DATASET_PATH/sam_masks/
 
-cd $PREFIX
+# cd $PREFIX
 # echo "Training Vanilla 3DGS..."
 # python train_scene.py \
 #     --source_path $DATASET_PATH \
 #     --model_path /root/autodl-tmp/3dgs_output/$SCENE_NAME \
 #     --iterations 30000
 
-# echo "Training Contrastive GS Feature..."
-# python get_scale.py \
-#     --image_root $DATASET_PATH \
-#     --model_path /root/autodl-tmp/3dgs_output/$SCENE_NAME
+cd $PREFIX
+echo "Training Contrastive GS Feature..."
+python get_scale.py \
+    --image_root $DATASET_PATH \
+    --model_path /root/autodl-tmp/3dgs_output/$SCENE_NAME
 
 python train_contrastive_feature.py \
     --model_path /root/autodl-tmp/3dgs_output/$SCENE_NAME \

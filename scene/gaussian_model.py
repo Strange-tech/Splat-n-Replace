@@ -23,13 +23,18 @@ import os
 import re
 from copy import deepcopy
 from utils.system_utils import mkdir_p
-from utils.graphics_utils import geom_transform_quat, geom_transform_points
+from utils.graphics_utils import (
+    geom_transform_quat,
+    geom_transform_points,
+    transform_rotation_scaling,
+)
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 from scene.vanilla_gaussian_model import GaussianModel
+from pytorch3d.transforms import quaternion_to_matrix, matrix_to_quaternion
 
 
 class InstGaussianModel:
@@ -38,8 +43,8 @@ class InstGaussianModel:
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
             L = build_scaling_rotation(scaling_modifier * scaling, rotation)
             actual_covariance = L @ L.transpose(1, 2)
-            symm = strip_symmetric(actual_covariance)
-            return symm
+            # symm = strip_symmetric(actual_covariance)
+            return actual_covariance
 
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
@@ -74,6 +79,7 @@ class InstGaussianModel:
         self._features_dc_offsets = []
         # features_rest_offsets: [offset1, offset2, ...]
         self._features_rest_offsets = []
+        self._opacity_offsets = []
         self.setup_functions()
 
     def capture(self):
@@ -95,6 +101,7 @@ class InstGaussianModel:
             self.transforms,
             self._features_dc_offsets,
             self._features_rest_offsets,
+            self._opacity_offsets,
         )
 
     def restore(self, model_args, training_args):
@@ -116,6 +123,7 @@ class InstGaussianModel:
             self.transforms,
             self._features_dc_offsets,
             self._features_rest_offsets,
+            self._opacity_offsets,
         ) = model_args
         if training_args:
             self.training_setup(training_args)
@@ -129,13 +137,20 @@ class InstGaussianModel:
         self.instances_num = len(transforms)
 
     def set_features_dc_offsets(self, features_dc_offsets):
-        self._features_dc_offsets = features_dc_offsets
+        for offset in features_dc_offsets:
+            self._features_dc_offsets.append(nn.Parameter(offset.requires_grad_(True)))
 
     def set_features_rest_offsets(self, features_rest_offsets):
-        self._features_rest_offsets = features_rest_offsets
+        for offset in features_rest_offsets:
+            self._features_rest_offsets.append(
+                nn.Parameter(offset.requires_grad_(True))
+            )
+
+    def set_opacity_offsets(self, opacity_offsets):
+        for offset in opacity_offsets:
+            self._opacity_offsets.append(nn.Parameter(offset.requires_grad_(True)))
 
     def instancing(self):
-        # self.is_instanced = True
         all_instances_xyz = []
         all_instances_scaling = []
         all_instances_rotation = []
@@ -147,18 +162,24 @@ class InstGaussianModel:
             # xyz
             trans_xyz = geom_transform_points(self._xyz, tran)
             all_instances_xyz.append(trans_xyz)
-            # scaling stays same
+            # rotation and scaling
             all_instances_scaling.append(self._scaling)
-            # rotation
-            trans_rotation = geom_transform_quat(self._rotation, tran.T)
-            all_instances_rotation.append(self._rotation)
+            R_local = quaternion_to_matrix(self.get_rotation)
+            R_new = tran.T[:3, :3] @ R_local
+            quat_new = matrix_to_quaternion(R_new)
+            all_instances_rotation.append(quat_new)
             # opacity stays same
-            all_instances_opacity.append(self._opacity)
+            trans_opacity_offsets = self._opacity + self._opacity_offsets[idx]
+            all_instances_opacity.append(trans_opacity_offsets)
             # feature_dc
-            trans_features_dc = self._features_dc + self._features_dc_offsets[idx]
+            trans_features_dc = (
+                0.8 * self._features_dc + 0.2 * self._features_dc_offsets[idx]
+            )
             all_instances_features_dc.append(trans_features_dc)
             # feature_rest
-            trans_features_rest = self._features_rest + self._features_rest_offsets[idx]
+            trans_features_rest = (
+                0.8 * self._features_rest + 0.2 * self._features_rest_offsets[idx]
+            )
             all_instances_features_rest.append(trans_features_rest)
 
         self.full_xyz = torch.cat(all_instances_xyz, dim=0)
@@ -335,6 +356,15 @@ class InstGaussianModel:
                     "params": [offset],
                     "lr": training_args.feature_lr / 20.0,
                     "name": f"f_rest_offset_{idx}",
+                }
+            )
+
+        for idx, offset in enumerate(self._opacity_offsets):
+            l.append(
+                {
+                    "params": [offset],
+                    "lr": training_args.opacity_lr,
+                    "name": f"opacity_offset_{idx}",
                 }
             )
 
@@ -801,58 +831,65 @@ class InstGaussianModel:
         )
         self.denom[update_filter] += 1
 
-    def merge(self, all_instances, merge_features=False):
-        all_xyz_list = []
-        all_color_list = []
-        num_pts = 0
-        for inst in all_instances:
-            xyz = inst.get_xyz  # shape: [M, 3]
-            color = inst.get_features_dc
-            all_xyz_list.append(xyz)
-            all_color_list.append(color)
-            num_pts = max(num_pts, xyz.shape[0])
+    def merge(self, all_instances, mode="max"):
+        # mode: "max", "merge"
+        if mode == "max":
+            num = 0
+            max_idx = -1
+            for idx, inst in enumerate(all_instances):
+                xyz = inst.get_xyz  # shape: [M, 3]
+                color = inst.get_features_dc
+                if xyz.shape[0] > num:
+                    num = xyz.shape[0]
+                    max_idx = idx
+            max_xyz = all_instances[max_idx].get_xyz
+            max_color = all_instances[max_idx].get_features_dc.squeeze()
+            pcd = BasicPointCloud(
+                points=max_xyz.detach().cpu().numpy(),
+                colors=max_color.detach().cpu().numpy(),
+                normals=np.zeros((num, 3)),
+            )
+            self.create_from_pcd(pcd, spatial_lr_scale=0.1)
+        elif mode == "merge":
+            all_xyz_list = []
+            all_color_list = []
+            num_pts = 0
+            for inst in all_instances:
+                xyz = inst.get_xyz  # shape: [M, 3]
+                color = inst.get_features_dc
+                all_xyz_list.append(xyz)
+                all_color_list.append(color)
+                num_pts = max(num_pts, xyz.shape[0])
 
-        all_xyz = torch.cat(all_xyz_list, dim=0)  # shape: [total_M, 3]
-        all_color = torch.cat(all_color_list, dim=0)
+            all_xyz = torch.cat(all_xyz_list, dim=0)  # shape: [total_M, 3]
+            all_color = torch.cat(all_color_list, dim=0)
 
-        # 使用 FPS 从 all_xyz 中采样 max_len 个点
-        print("FPS...")
-        # fps_idx = farthest_point_sampling(all_xyz, num_pts)
-        sampling_idx = random_point_sampling(all_xyz, num_pts)
-        print("FPS Done.")
-        shared_template_xyz = all_xyz[sampling_idx]  # shape: [max_len, 3]
-        shared_template_color = all_color[sampling_idx].squeeze()
-        pcd = BasicPointCloud(
-            points=shared_template_xyz.detach().cpu().numpy(),
-            colors=shared_template_color.detach().cpu().numpy(),
-            normals=np.zeros((num_pts, 3)),
-        )
-        self.create_from_pcd(pcd, spatial_lr_scale=0.1)
+            # 使用 FPS 从 all_xyz 中采样 max_len 个点
+            print("FPS...")
+            # fps_idx = farthest_point_sampling(all_xyz, num_pts)
+            sampling_idx = random_point_sampling(all_xyz, num_pts)
+            print("FPS Done.")
+            shared_template_xyz = all_xyz[sampling_idx]  # shape: [max_len, 3]
+            shared_template_color = all_color[sampling_idx].squeeze()
+            pcd = BasicPointCloud(
+                points=shared_template_xyz.detach().cpu().numpy(),
+                colors=shared_template_color.detach().cpu().numpy(),
+                normals=np.zeros((num_pts, 3)),
+            )
+            self.create_from_pcd(pcd, spatial_lr_scale=0.1)
 
-    # def load_chkpnt(self, path):
-    #     if not os.path.exists(path):
-    #         raise FileNotFoundError(f"Checkpoint file {path} does not exist.")
-    #     checkpoint = torch.load(path, map_location="cuda")
+    def frozen_offsets(self):
+        for offset in self._features_dc_offsets:
+            offset.requires_grad_(False)
+        for offset in self._features_rest_offsets:
+            offset.requires_grad_(False)
+        for offset in self._opacity_offsets:
+            offset.requires_grad_(False)
 
-    #     iteration = checkpoint[1]
-    #     print(f"Loading checkpoint at iteration {iteration}...")
-
-    #     model = checkpoint[0]
-    #     (
-    #         self.active_sh_degree,
-    #         self._xyz,
-    #         self._mask,
-    #         self._features_dc,
-    #         self._features_rest,
-    #         self._scaling,
-    #         self._rotation,
-    #         self._opacity,
-    #         self.max_radii2D,
-    #         self.xyz_gradient_accum,
-    #         self.denom,
-    #         optimizer,
-    #         self.spatial_lr_scale,
-    #         self.transforms,
-    #         self.features_dc_offsets,
-    #         self.features_rest_offsets,
-    #     ) = model
+    def activate_offsets(self):
+        for offset in self._features_dc_offsets:
+            offset.requires_grad_(True)
+        for offset in self._features_rest_offsets:
+            offset.requires_grad_(True)
+        for offset in self._opacity_offsets:
+            offset.requires_grad_(True)

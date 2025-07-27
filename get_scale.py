@@ -189,6 +189,9 @@ if __name__ == "__main__":
         )
 
         eroded_masks = (eroded_masks >= 2).squeeze()
+        # print(eroded_masks.ndim)
+        # if eroded_masks.ndim != 3:
+        #     continue
 
         scale = torch.zeros(len(corresponding_masks))
         for mask_id in range(len(corresponding_masks)):
