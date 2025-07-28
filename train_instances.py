@@ -307,7 +307,7 @@ if __name__ == "__main__":
             for _ in all_instances
         ]
         features_rest_offsets = [
-            torch.zeros_like(template_gs.get_features_rest, requires_grad=True)
+            torch.zeros_like(template_gs.get_featu·res_rest, requires_grad=True)
             for _ in all_instances
         ]
         opacity_offsets = [
