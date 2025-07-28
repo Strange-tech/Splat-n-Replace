@@ -83,7 +83,7 @@ def training(
 
     for temp_gs in all_temp_gs:
         temp_gs.training_setup(opt)
-        temp_gs.()
+        temp_gs.frozen_offsets()
 
     # if checkpoint:
     #     (model_params, first_iter) = torch.load(checkpoint)
@@ -163,13 +163,30 @@ def training(
 
         gt_image = viewpoint_cam.original_image.cuda()
 
-        if iteration < int(mask_iterations_ratio * opt.iterations):
-            mask = torch.load(
-                f"{dataset.source_path}/instance_masks/{viewpoint_cam.image_name}.pt"
-            )
-            mask3 = mask.unsqueeze(0).expand_as(gt_image)  # 变成 3 通道掩码
-            gt_image = gt_image * mask3
-            image = image * mask3
+        # if iteration < int(mask_iterations_ratio * opt.iterations):
+        mask = torch.load(
+            f"{dataset.source_path}/instance_masks/{viewpoint_cam.image_name}.pt"
+        ).bool()
+        mask3 = mask.unsqueeze(0).expand_as(gt_image)  # 变成 3 通道掩码
+        unmask3 = ~mask.unsqueeze(0).expand_as(gt_image)  # 变成 3 通道掩码
+        masked_gt_image = gt_image * mask3
+        masked_image = image * mask3
+        unmasked_gt_image = gt_image * unmask3
+        unmasked_image = image * unmask3
+
+        mask_Ll1 = l1_loss(masked_image, masked_gt_image)
+        mask_loss = (1.0 - opt.lambda_dssim) * mask_Ll1 + opt.lambda_dssim * (
+            1.0 - ssim(masked_image, masked_gt_image)
+        )
+        unmask_Ll1 = l1_loss(unmasked_image, unmasked_gt_image)
+        unmask_loss = (1.0 - opt.lambda_dssim) * unmask_Ll1 + opt.lambda_dssim * (
+            1.0 - ssim(unmasked_image, unmasked_gt_image)
+        )
+        loss = mask_loss + unmask_loss
+
+        loss.backward()
+
+        iter_end.record()
 
         if iteration % 1000 == 0:
             save_image_pair_cv2(
@@ -178,15 +195,6 @@ def training(
                 iteration,
                 save_dir=f"/root/autodl-tmp/3dgs_output/{SCENE_NAME}/training_images",
             )
-
-        Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (
-            1.0 - ssim(image, gt_image)
-        )
-
-        loss.backward()
-
-        iter_end.record()
 
         with torch.no_grad():
             # Progress bar
@@ -307,7 +315,7 @@ if __name__ == "__main__":
             for _ in all_instances
         ]
         features_rest_offsets = [
-            torch.zeros_like(template_gs.get_featu·res_rest, requires_grad=True)
+            torch.zeros_like(template_gs.get_features_rest, requires_grad=True)
             for _ in all_instances
         ]
         opacity_offsets = [

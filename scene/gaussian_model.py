@@ -169,8 +169,9 @@ class InstGaussianModel:
             quat_new = matrix_to_quaternion(R_new)
             all_instances_rotation.append(quat_new)
             # opacity stays same
-            trans_opacity_offsets = self._opacity + self._opacity_offsets[idx]
-            all_instances_opacity.append(trans_opacity_offsets)
+            # trans_opacity_offsets = self._opacity + self._opacity_offsets[idx]
+            # all_instances_opacity.append(trans_opacity_offsets)
+            all_instances_opacity.append(self._opacity)
             # feature_dc
             trans_features_dc = (
                 0.8 * self._features_dc + 0.2 * self._features_dc_offsets[idx]
