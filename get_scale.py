@@ -195,8 +195,10 @@ if __name__ == "__main__":
 
         scale = torch.zeros(len(corresponding_masks))
         for mask_id in range(len(corresponding_masks)):
-
-            point_in_3D_in_mask = points_in_3D[eroded_masks[mask_id] == 1]
+            try:
+                point_in_3D_in_mask = points_in_3D[eroded_masks[mask_id] == 1]
+            except Exception as e:
+                continue
 
             scale[mask_id] = (point_in_3D_in_mask.std(dim=0) * 2).norm()
 

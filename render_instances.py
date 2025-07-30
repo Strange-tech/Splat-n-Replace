@@ -86,10 +86,10 @@ if __name__ == "__main__":
     # view.T = np.array([-5.05, -2.45, 6.23])
     view.update()
 
-    rendered_image = instanced_render(
-        view, all_template_gs, bg_gaussians, pp.extract(args), background
-    )["render"]
-    save_image(rendered_image, f"{save_path}/test_3.jpg")
+    # rendered_image = instanced_render(
+    #     view, all_template_gs, bg_gaussians, pp.extract(args), background
+    # )["render"]
+    # save_image(rendered_image, f"{save_path}/test_3.jpg")
 
     # All done
     print("\nRender complete.")

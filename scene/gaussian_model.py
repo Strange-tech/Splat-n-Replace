@@ -169,9 +169,9 @@ class InstGaussianModel:
             quat_new = matrix_to_quaternion(R_new)
             all_instances_rotation.append(quat_new)
             # opacity stays same
-            # trans_opacity_offsets = self._opacity + self._opacity_offsets[idx]
-            # all_instances_opacity.append(trans_opacity_offsets)
-            all_instances_opacity.append(self._opacity)
+            trans_opacity_offsets = self._opacity + self._opacity_offsets[idx]
+            all_instances_opacity.append(trans_opacity_offsets)
+            # all_instances_opacity.append(self._opacity)
             # feature_dc
             trans_features_dc = (
                 0.8 * self._features_dc + 0.2 * self._features_dc_offsets[idx]
@@ -610,6 +610,8 @@ class InstGaussianModel:
             self._features_rest_offsets[idx] = optimizable_tensors[
                 f"f_rest_offset_{idx}"
             ]
+        for idx, offset in enumerate(self._opacity_offsets):
+            self._opacity_offsets[idx] = optimizable_tensors[f"opacity_offset_{idx}"]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[
             valid_points_mask.repeat(self.instances_num)
@@ -626,7 +628,6 @@ class InstGaussianModel:
             extension_tensor = tensors_dict[group["name"]]
             stored_state = self.optimizer.state.get(group["params"][0], None)
             if stored_state is not None:
-
                 stored_state["exp_avg"] = torch.cat(
                     (stored_state["exp_avg"], torch.zeros_like(extension_tensor)), dim=0
                 )
@@ -664,6 +665,7 @@ class InstGaussianModel:
         new_rotation,
         new_features_dc_offsets,
         new_features_rest_offsets,
+        new_opacity_offsets,
     ):
         d = {
             "xyz": new_xyz,
@@ -678,6 +680,8 @@ class InstGaussianModel:
             d[f"f_dc_offset_{idx}"] = offset
         for idx, offset in enumerate(new_features_rest_offsets):
             d[f"f_rest_offset_{idx}"] = offset
+        for idx, offset in enumerate(new_opacity_offsets):
+            d[f"opacity_offset_{idx}"] = offset
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
         self._xyz = optimizable_tensors["xyz"]
@@ -693,6 +697,8 @@ class InstGaussianModel:
             self._features_rest_offsets[idx] = optimizable_tensors[
                 f"f_rest_offset_{idx}"
             ]
+        for idx, offset in enumerate(self._opacity_offsets):
+            self._opacity_offsets[idx] = optimizable_tensors[f"opacity_offset_{idx}"]
 
         self.xyz_gradient_accum = torch.zeros(
             (self._xyz.shape[0] * self.instances_num, 1), device="cuda"
@@ -733,11 +739,14 @@ class InstGaussianModel:
 
         new_features_dc_offsets = deepcopy(self._features_dc_offsets)
         new_features_rest_offsets = deepcopy(self._features_rest_offsets)
+        new_opacity_offsets = deepcopy(self._opacity_offsets)
 
         for idx, offset in enumerate(self._features_dc_offsets):
             new_features_dc_offsets[idx] = offset[selected_pts_mask].repeat(N, 1, 1)
         for idx, offset in enumerate(self._features_rest_offsets):
             new_features_rest_offsets[idx] = offset[selected_pts_mask].repeat(N, 1, 1)
+        for idx, offset in enumerate(self._opacity_offsets):
+            new_opacity_offsets[idx] = offset[selected_pts_mask].repeat(N, 1)
 
         self.densification_postfix(
             new_xyz,
@@ -748,6 +757,7 @@ class InstGaussianModel:
             new_rotation,
             new_features_dc_offsets,
             new_features_rest_offsets,
+            new_opacity_offsets,
         )
 
         prune_filter = torch.cat(
@@ -778,11 +788,14 @@ class InstGaussianModel:
 
         new_features_dc_offsets = deepcopy(self._features_dc_offsets)
         new_features_rest_offsets = deepcopy(self._features_rest_offsets)
+        new_opacity_offsets = deepcopy(self._opacity_offsets)
 
         for idx, offset in enumerate(self._features_dc_offsets):
             new_features_dc_offsets[idx] = offset[selected_pts_mask]
         for idx, offset in enumerate(self._features_rest_offsets):
             new_features_rest_offsets[idx] = offset[selected_pts_mask]
+        for idx, offset in enumerate(self._opacity_offsets):
+            new_opacity_offsets[idx] = offset[selected_pts_mask]
 
         self.densification_postfix(
             new_xyz,
@@ -793,6 +806,7 @@ class InstGaussianModel:
             new_rotation,
             new_features_dc_offsets,
             new_features_rest_offsets,
+            new_opacity_offsets,
         )
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
@@ -844,10 +858,14 @@ class InstGaussianModel:
                     num = xyz.shape[0]
                     max_idx = idx
             max_xyz = all_instances[max_idx].get_xyz
+            # 先搞他个一半再说
+            sampling_idx = random_point_sampling(max_xyz, num / 2)
+            sampled_xyz = max_xyz[sampling_idx]
             max_color = all_instances[max_idx].get_features_dc.squeeze()
+            sampled_color = max_color[sampling_idx]
             pcd = BasicPointCloud(
-                points=max_xyz.detach().cpu().numpy(),
-                colors=max_color.detach().cpu().numpy(),
+                points=sampled_xyz.detach().cpu().numpy(),
+                colors=sampled_color.detach().cpu().numpy(),
                 normals=np.zeros((num, 3)),
             )
             self.create_from_pcd(pcd, spatial_lr_scale=0.1)
