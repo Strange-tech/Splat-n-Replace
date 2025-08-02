@@ -107,6 +107,7 @@ if __name__ == "__main__":
         target="scene",
     )
 
+    print(dataset.source_path)
     assert (
         os.path.exists(os.path.join(dataset.source_path, "images"))
         and "Please specify a valid image root."

@@ -21,7 +21,8 @@ PREFIX=/Splat-n-Replace
 # python grounded_sam2_tracking_demo_with_continuous_id_gd1.5.py \
 #     --text "building. column. window. door. stairs. bench. person. bush. tree." \
 #     --video_dir $DATASET_PATH/images/ \
-#     --output_dir /root/autodl-tmp/output/$SCENE_NAME/
+#     --output_dir $DATASET_PATH/sam_masks/ \
+#     --step 5
 
 # cd $PREFIX/utils
 # echo "Converting Grounded-SAM masks..."
@@ -36,16 +37,16 @@ PREFIX=/Splat-n-Replace
 #     --model_path /root/autodl-tmp/3dgs_output/$SCENE_NAME \
 #     --iterations 30000
 
-cd $PREFIX
-echo "SAM..."
-python extract_segment_everything_masks.py \
-    --image_root $DATASET_PATH 
+# cd $PREFIX
+# echo "SAM..."
+# python extract_segment_everything_masks.py \
+#     --image_root $DATASET_PATH 
 
-cd $PREFIX
-echo "Training Contrastive GS Feature..."
-python get_scale.py \
-    --image_root $DATASET_PATH \
-    --model_path /root/autodl-tmp/3dgs_output/$SCENE_NAME
+# cd $PREFIX
+# echo "Training Contrastive GS Feature..."
+# python get_scale.py \
+#     --image_root $DATASET_PATH \
+#     --model_path /root/autodl-tmp/3dgs_output/$SCENE_NAME
 
 cd $PREFIX
 python train_contrastive_feature.py \
