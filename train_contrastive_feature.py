@@ -98,14 +98,14 @@ def training(
     )
 
     # 30030
-    scale_gate = torch.nn.Sequential(
-        torch.nn.Linear(1, 32, bias=True), torch.nn.Sigmoid()
-    )
-    scale_gate = scale_gate.cuda()
-    scale_gate.train()
+    # scale_gate = torch.nn.Sequential(
+    #     torch.nn.Linear(1, 32, bias=True), torch.nn.Sigmoid()
+    # )
+    # scale_gate = scale_gate.cuda()
+    # scale_gate.train()
 
-    param_group = {"params": scale_gate.parameters(), "lr": opt.feature_lr, "name": "f"}
-    feature_gaussians.optimizer.add_param_group(param_group)
+    # param_group = {"params": scale_gate.parameters(), "lr": opt.feature_lr, "name": "f"}
+    # feature_gaussians.optimizer.add_param_group(param_group)
 
     smooth_weights = None
 
@@ -127,17 +127,17 @@ def training(
     first_iter += 1
 
     print("Preparing Quantile Transform...")
-    # gather scales
-    all_scales = []
-    for cam in scene.getTrainCameras():
-        all_scales.append(cam.mask_scales)
-    all_scales = torch.cat(all_scales)
+    # # gather scales
+    # all_scales = []
+    # for cam in scene.getTrainCameras():
+    #     all_scales.append(cam.mask_scales)
+    # all_scales = torch.cat(all_scales)
 
-    if torch.isnan(all_scales).any():
-        print("⚠️ Tensor contains NaN values.")
+    # if torch.isnan(all_scales).any():
+    #     print("⚠️ Tensor contains NaN values.")
 
-    upper_bound_scale = all_scales.max().item()
-    print("Upper bound scale:", upper_bound_scale)
+    # upper_bound_scale = all_scales.max().item()
+    # print("Upper bound scale:", upper_bound_scale)
     # upper_bound_scale = np.percentile(all_scales.detach().cpu().numpy(), 75)
 
     # all_scales = []
@@ -146,20 +146,20 @@ def training(
     #     all_scales.append(cam.mask_scales)
     # all_scales = torch.cat(all_scales)
 
-    scale_aware_dim = opt.scale_aware_dim
+    # scale_aware_dim = opt.scale_aware_dim
 
-    if scale_aware_dim <= 0 or scale_aware_dim >= 32:
-        print("Using adaptive scale gate.")
-        q_trans = get_quantile_func(all_scales, "uniform")
-    else:
-        q_trans = get_quantile_func(all_scales, "uniform")
-        fixed_scale_gate = torch.tensor(
-            [
-                [1 for j in range(32 - scale_aware_dim + i)]
-                + [0 for k in range(scale_aware_dim - i)]
-                for i in range(scale_aware_dim + 1)
-            ]
-        ).cuda()
+    # if scale_aware_dim <= 0 or scale_aware_dim >= 32:
+    #     print("Using adaptive scale gate.")
+    #     q_trans = get_quantile_func(all_scales, "uniform")
+    # else:
+    #     q_trans = get_quantile_func(all_scales, "uniform")
+    #     fixed_scale_gate = torch.tensor(
+    #         [
+    #             [1 for j in range(32 - scale_aware_dim + i)]
+    #             + [0 for k in range(scale_aware_dim - i)]
+    #             for i in range(scale_aware_dim + 1)
+    #         ]
+    #     ).cuda()
 
     for iteration in range(first_iter, opt.iterations + 1):
         iter_start.record()
@@ -181,28 +181,28 @@ def training(
                 viewpoint_cam.image_width,
             )
 
-            # N_mask
+            # # N_mask
             mask_scales = viewpoint_cam.mask_scales.cuda()
 
-            mask_scales, sort_indices = torch.sort(mask_scales, descending=True)
-            sam_masks = sam_masks[sort_indices, :, :]
+            # mask_scales, sort_indices = torch.sort(mask_scales, descending=True)
+            # sam_masks = sam_masks[sort_indices, :, :]
 
             num_sampled_scales = 8
 
             sampled_scale_index = torch.randperm(len(mask_scales))[:num_sampled_scales]
 
-            tmp = torch.zeros(num_sampled_scales + 2)
+            # tmp = torch.zeros(num_sampled_scales + 2)
 
-            tmp[1 : len(sampled_scale_index) + 1] = sampled_scale_index
-            tmp[-1] = len(mask_scales) - 1
-            tmp[0] = -1  # attach a bigger scale
-            sampled_scale_index = tmp.long()
+            # tmp[1 : len(sampled_scale_index) + 1] = sampled_scale_index
+            # tmp[-1] = len(mask_scales) - 1
+            # tmp[0] = -1  # attach a bigger scale
+            # sampled_scale_index = tmp.long()
 
             sampled_scales = mask_scales[sampled_scale_index]
 
-            # print(mask_scales, upper_bound_scale)
+            # # print(mask_scales, upper_bound_scale)
 
-            second_big_scale = mask_scales[mask_scales < upper_bound_scale].max()
+            # second_big_scale = mask_scales[mask_scales < upper_bound_scale].max()
 
             ray_sample_rate = (
                 opt.ray_sample_rate
@@ -243,21 +243,21 @@ def training(
 
             gt_corrs = []
 
-            sampled_scales[0] = upper_bound_scale + upper_bound_scale * torch.rand(1)[0]
+            # sampled_scales[0] = upper_bound_scale + upper_bound_scale * torch.rand(1)[0]
             for idx, si in enumerate(sampled_scale_index):
-                upper_bound = sampled_scales[idx] >= upper_bound_scale
+                # upper_bound = sampled_scales[idx] >= upper_bound_scale
 
-                if si != len(mask_scales) - 1 and not upper_bound:
-                    sampled_scales[idx] -= (
-                        sampled_scales[idx] - mask_scales[si + 1]
-                    ) * torch.rand(1)[0]
-                elif upper_bound:
-                    sampled_scales[idx] -= (
-                        sampled_scales[idx] - second_big_scale
-                    ) * torch.rand(1)[0]
-                else:
-                    sampled_scales[idx] -= sampled_scales[idx] * torch.rand(1)[0]
-
+                # if si != len(mask_scales) - 1 and not upper_bound:
+                #     sampled_scales[idx] -= (
+                #         sampled_scales[idx] - mask_scales[si + 1]
+                #     ) * torch.rand(1)[0]
+                # elif upper_bound:
+                #     sampled_scales[idx] -= (
+                #         sampled_scales[idx] - second_big_scale
+                #     ) * torch.rand(1)[0]
+                # else:
+                #     sampled_scales[idx] -= sampled_scales[idx] * torch.rand(1)[0]
+                upper_bound = None
                 if not upper_bound:
                     gt_vec = torch.zeros_like(sam_masks_sampled_ray)
                     gt_vec[: si + 1, :] = sam_masks_sampled_ray[: si + 1, :]
@@ -279,8 +279,8 @@ def training(
             # N_scale S S
             gt_corrs = torch.stack(gt_corrs, dim=0)
 
-            sampled_scales = q_trans(sampled_scales).squeeze()
-            sampled_scales = sampled_scales.squeeze()
+            # sampled_scales = q_trans(sampled_scales).squeeze()
+            # sampled_scales = sampled_scales.squeeze()
 
         render_pkg_feat = render_contrastive_feature(
             viewpoint_cam,
@@ -307,20 +307,21 @@ def training(
             mode="bilinear",
         ).squeeze(0)
 
-        # N_sampled_scales 32
-        if scale_aware_dim <= 0 or scale_aware_dim >= 32:
-            gates = scale_gate(sampled_scales.unsqueeze(-1))
-        else:
-            int_sampled_scales = (
-                (1 - sampled_scales.squeeze()) * scale_aware_dim
-            ).long()
-            gates = fixed_scale_gate[int_sampled_scales].detach()
+        # # N_sampled_scales 32
+        # if scale_aware_dim <= 0 or scale_aware_dim >= 32:
+        #     gates = scale_gate(sampled_scales.unsqueeze(-1))
+        # else:
+        #     int_sampled_scales = (
+        #         (1 - sampled_scales.squeeze()) * scale_aware_dim
+        #     ).long()
+        #     gates = fixed_scale_gate[int_sampled_scales].detach()
 
         # N_sampled_scales C H W
         feature_with_scale = rendered_features.unsqueeze(0).repeat(
             [sampled_scales.shape[0], 1, 1, 1]
         )
-        feature_with_scale = feature_with_scale * gates.unsqueeze(-1).unsqueeze(-1)
+        # feature_with_scale = feature_with_scale * gates.unsqueeze(-1).unsqueeze(-1)
+        feature_with_scale = feature_with_scale
 
         sampled_feature_with_scale = feature_with_scale[:, :, sampled_ray]
 
